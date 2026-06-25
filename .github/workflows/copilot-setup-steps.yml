@@ -1,0 +1,51 @@
+name: Copilot Environment Setup
+
+# Automatically run the setup steps when they are changed to allow for easy validation, and
+# allow manual testing through the repository's "Actions" tab
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+  copilot-setup-steps:
+    name: Copilot Setup Steps
+    runs-on: ubuntu-latest
+
+    # Set the permissions to the lowest permissions possible needed for your steps.
+    # Copilot will be given its own token for its operations.
+    permissions:
+      contents: read
+
+    env:
+      DOTNET_VERSION: 10.0.x # -------------------------- the version of .NET to use
+      NODE_VERSION: 22.x # ------------------------------ the version of node.js to use
+      SOLUTION_PATH: ./LegacyRecordsCaseWareFileUsers.sln # ----- the path to the solution *.sln file
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # -- fetch full repository history (not shallow clone)
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install npm Dependencies
+        run: npm ci
+
+      - name: Install .NET dependencies
+        run: dotnet restore ${{ env.SOLUTION_PATH }}

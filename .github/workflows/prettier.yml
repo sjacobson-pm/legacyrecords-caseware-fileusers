@@ -1,0 +1,38 @@
+name: Prettier
+
+on:
+  pull_request:
+    branches:
+      - develop
+
+  workflow_dispatch:
+
+concurrency:
+  group: prettier--${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 22.x # ----- the version of node.js to use
+
+jobs:
+  check-code-formatting:
+    name: Check Code Formatting
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Prettier Check
+        run: npm run format:check:linux

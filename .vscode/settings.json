@@ -1,0 +1,71 @@
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+
+  "[markdown]": {
+    "editor.wordWrap": "off"
+  },
+
+  "cSpell.diagnosticLevel": "Information",
+  "cSpell.minWordLength": 4,
+  "cSpell.showStatus": true,
+
+  "better-comments.multilineComments": true,
+  "better-comments.highlightPlainText": true,
+  "better-comments.tags": [
+    {
+      "mob-name": "alert",
+      "tag": "!",
+      "color": "#FF2D00",
+      "strikethrough": false,
+      "backgroundColor": "transparent"
+    },
+    {
+      "mob-name": "question",
+      "tag": "?",
+      "color": "#FFFF00",
+      "strikethrough": false,
+      "backgroundColor": "transparent"
+    },
+    {
+      "mob-name": "disabled",
+      "tag": "//",
+      "color": "#474747",
+      "strikethrough": true,
+      "backgroundColor": "transparent"
+    },
+    {
+      "mob-name": "todo",
+      "tag": "todo",
+      "color": "#FF8C00",
+      "strikethrough": false,
+      "backgroundColor": "transparent"
+    },
+    {
+      "mob-name": "highlight",
+      "tag": "*",
+      "color": "#98C379",
+      "strikethrough": false,
+      "backgroundColor": "transparent"
+    },
+    {
+      "mob-name": "url",
+      "tag": "`",
+      "color": "#3498DB",
+      "strikethrough": false,
+      "backgroundColor": "transparent"
+    }
+  ],
+
+  "markdown.extension.italic.indicator": "_",
+  "markdown.extension.preview.autoShowPreviewToSide": false,
+  "markdown.extension.tableFormatter.enabled": true,
+  "markdown.extension.toc.downcaseLink": true,
+  "markdown.extension.toc.slugifyMode": "azureDevops",
+  "markdown.extension.toc.omittedFromToc": {},
+  "markdown.extension.toc.levels": "2..4",
+  "markdown.extension.toc.orderedList": false,
+  "markdown.extension.toc.plaintext": false,
+  "markdown.extension.toc.unorderedList.marker": "-",
+  "markdown.extension.toc.updateOnSave": false
+}

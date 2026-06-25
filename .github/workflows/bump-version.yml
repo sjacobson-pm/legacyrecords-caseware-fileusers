@@ -1,0 +1,32 @@
+name: Bump Version
+
+run-name: Bump version - requested by ${{ github.actor }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      bumpType:
+        description: 'Bump Type (major, minor, patch)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+
+concurrency:
+  group: bump-version--${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  call-shared-version-bump-workflow:
+    name: Bump Version
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    uses: plantemoran-appdev/shared-github-workflows/.github/workflows/shared--bump-version--dotnet.yml@develop
+    with:
+      bumpType: ${{ inputs.bumpType }}

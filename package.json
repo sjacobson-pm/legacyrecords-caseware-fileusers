@@ -1,0 +1,24 @@
+{
+  "name": "legacyrecords-caseware-fileusers",
+  "license": "UNLICENSED",
+  "private": true,
+  "homepage": "https://github.com/sjacobson-pm/legacyrecords-caseware-fileusers#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sjacobson-pm/legacyrecords-caseware-fileusers.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sjacobson-pm/legacyrecords-caseware-fileusers/issues"
+  },
+  "scripts": {
+    "format:win": "prettier . --write --log-level log",
+    "format:linux": "prettier . --write --log-level log --end-of-line lf",
+    "format:check:win": "prettier . --check",
+    "format:check:linux": "prettier . --check --end-of-line lf",
+    "lint": "markdownlint **/*.md"
+  },
+  "devDependencies": {
+    "markdownlint-cli": "^0.48.0",
+    "prettier": "^3.6.2"
+  }
+}

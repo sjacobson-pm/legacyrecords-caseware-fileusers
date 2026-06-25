@@ -1,0 +1,25 @@
+name: Linting
+
+on:
+  push:
+    branches:
+      - develop
+
+  pull_request:
+    branches:
+      - develop
+
+  workflow_dispatch:
+
+concurrency:
+  group: linting--${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-source-code:
+    name: Lint source code
+
+    permissions:
+      contents: read
+
+    uses: plantemoran-appdev/shared-github-workflows/.github/workflows/shared--linting.yml@develop

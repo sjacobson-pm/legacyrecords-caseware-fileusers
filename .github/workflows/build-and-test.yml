@@ -1,0 +1,71 @@
+name: Build and Test the Solution
+
+on:
+  push:
+    branches:
+      - develop
+
+  pull_request:
+    branches:
+      - develop
+
+  workflow_dispatch:
+
+concurrency:
+  group: build-console-app--${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_CONFIGURATION: Release # ------------------------------------------------- the build configuration to use
+  DOTNET_VERSION: 10.0.x # ------------------------------------------------------- the .net version to use
+  SOLUTION_PATH: ./LegacyRecordsCaseWareFileUsers.sln # ---------------------------------- the path to the solution *.sln file
+  TEST_RESULTS_FOLDER: test-results # -------------------------------------------- the folder in which to store the test results
+  TEST_COVERAGE_SETTINGS_FILE_PATH: ./test/unit-tests/coverlet.runsettings # ----- the path to the code coverage settings file
+
+jobs:
+  build-and-test:
+    name: Build and Test Solution
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install dependencies
+        run: dotnet restore ${{ env.SOLUTION_PATH }}
+
+      - name: Build
+        run: >
+          dotnet build
+          --configuration ${{ env.BUILD_CONFIGURATION }}
+          --no-restore
+          ${{ env.SOLUTION_PATH }}
+
+      - name: Test
+        run: >
+          dotnet test
+          --configuration ${{ env.BUILD_CONFIGURATION }}
+          --no-build
+          --verbosity normal
+          --results-directory ${{ env.TEST_RESULTS_FOLDER }}
+          --logger trx
+          --logger console
+          --collect:"XPlat Code Coverage"
+          --settings ${{ env.TEST_COVERAGE_SETTINGS_FILE_PATH }}
+          ${{ env.SOLUTION_PATH }}
+
+      - name: Upload coverage to codecov
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          directory: ./${{ env.TEST_RESULTS_FOLDER }}
+          fail_ci_if_error: true
+          verbose: true

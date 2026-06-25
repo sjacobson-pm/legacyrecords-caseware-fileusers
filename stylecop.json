@@ -1,0 +1,43 @@
+{
+  "$schema": "https://raw.githubusercontent.com/DotNetAnalyzers/StyleCopAnalyzers/master/StyleCop.Analyzers/StyleCop.Analyzers/Settings/stylecop.schema.json",
+  "settings": {
+    "documentationRules": {
+      "companyName": "Plante Moran",
+      "copyrightText": "Copyright (c) {companyName}. All Rights Reserved.",
+      "variables": {},
+      "xmlHeader": true,
+      "fileNamingConvention": "metadata",
+      "headerDecoration": "--------------------------------------------------------------------------------",
+      "documentInterfaces": true,
+      "documentExposedElements": true,
+      "documentInternalElements": true,
+      "documentPrivateElements": true,
+      "documentPrivateFields": true,
+      "documentationCulture": "en-US"
+    },
+    "layoutRules": {
+      "newlineAtEndOfFile": "require",
+      "allowConsecutiveUsings": true
+    },
+    "indentation": {
+      "indentationSize": 4,
+      "tabSize": 4,
+      "useTabs": false
+    },
+    "spacingRules": {},
+    "readabilityRules": {},
+    "orderingRules": {
+      "blankLinesBetweenUsingGroups": "omit",
+      "systemUsingDirectivesFirst": true,
+      "usingDirectivesPlacement": "outsideNamespace",
+      "elementOrder": ["kind", "accessibility", "constant", "static", "readonly"]
+    },
+    "namingRules": {
+      "allowCommonHungarianPrefixes": true,
+      "allowedHungarianPrefixes": ["pm"]
+    },
+    "maintainabilityRules": {
+      "topLevelTypes": ["class", "interface"]
+    }
+  }
+}

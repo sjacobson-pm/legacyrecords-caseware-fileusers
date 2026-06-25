@@ -1,0 +1,60 @@
+name: 'Code Vulnerability Scanning'
+
+on:
+  push:
+    branches: [develop]
+
+  pull_request:
+    branches: [develop]
+
+  schedule:
+    - cron: '0 6 * * 6'
+
+concurrency:
+  group: code-analysis--${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_CONFIGURATION: Release # -------------------- the build configuration to use
+  DOTNET_VERSION: 10.0.x # -------------------------- the .net version to use
+  SOLUTION_PATH: ./LegacyRecordsCaseWareFileUsers.sln # ----- the path to the solution *.sln file
+
+jobs:
+  analyze:
+    name: Code Analysis
+    runs-on: ubuntu-latest
+
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['javascript', 'csharp']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+
+      - if: matrix.language == 'csharp'
+        name: Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - if: matrix.language == 'csharp'
+        name: Build the Solution
+        run: |
+          dotnet restore ${{ env.SOLUTION_PATH }}
+          dotnet build --configuration ${{ env.BUILD_CONFIGURATION }} --no-restore ${{ env.SOLUTION_PATH }}
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
