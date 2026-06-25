@@ -72,7 +72,23 @@ internal class Program
         log.Information("Exiting {applicationTitle} with exit code {exitCode}...", Constants.ApplicationTitle, exitCode);
         await Log.CloseAndFlushAsync();
 
+        WaitForExitKeyPress();
+
         Environment.Exit(exitCode);
+    }
+
+    /// <summary>
+    ///     Pauses before exit so output remains visible when the program is run interactively.
+    /// </summary>
+    private static void WaitForExitKeyPress()
+    {
+        if (Console.IsInputRedirected)
+        {
+            return;
+        }
+
+        Console.WriteLine("Press any key to exit...");
+        Console.ReadKey(true);
     }
 
     /// <summary>
@@ -158,9 +174,6 @@ internal class Program
     /// </summary>
     private static void ConfigureLogging()
     {
-        var telemetryConfiguration = TelemetryConfiguration.CreateDefault();
-        telemetryConfiguration.ConnectionString = configOptions.Logging.ApplicationInsights.ConnectionString;
-
         var loggerConfiguration = new LoggerConfiguration();
 
         loggerConfiguration.MinimumLevel.ControlledBy(LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.Default))
@@ -175,16 +188,44 @@ internal class Program
                                 levelSwitch: LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.Debug))
                            .WriteTo.Console(
                                 outputTemplate: configOptions.Logging.ConsoleOutputTemplate,
-                                levelSwitch: LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.Console))
-                           .WriteTo.ApplicationInsights(
-                                telemetryConfiguration,
-                                TelemetryConverter.Traces,
-                                LoggingHelper.GetLogEventLevel(configOptions.Logging.LogLevel.ApplicationInsights),
-                                LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.ApplicationInsights));
+                                levelSwitch: LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.Console));
+
+        ConfigureApplicationInsightsLogging(loggerConfiguration);
 
         Log.Logger = loggerConfiguration.CreateLogger();
 
         log = Log.ForContext<Program>();
+    }
+
+    /// <summary>
+    ///     Adds the Application Insights sink when a connection string is configured. A missing or
+    ///     invalid connection string disables the sink rather than failing start-up.
+    /// </summary>
+    /// <param name="loggerConfiguration">The logger configuration to add the sink to.</param>
+    private static void ConfigureApplicationInsightsLogging(LoggerConfiguration loggerConfiguration)
+    {
+        var connectionString = configOptions.Logging.ApplicationInsights.ConnectionString;
+
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            return;
+        }
+
+        try
+        {
+            var telemetryConfiguration = TelemetryConfiguration.CreateDefault();
+            telemetryConfiguration.ConnectionString = connectionString;
+
+            loggerConfiguration.WriteTo.ApplicationInsights(
+                telemetryConfiguration,
+                TelemetryConverter.Traces,
+                LoggingHelper.GetLogEventLevel(configOptions.Logging.LogLevel.ApplicationInsights),
+                LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.ApplicationInsights));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Application Insights logging is disabled due to an invalid connection string: {ex.Message}");
+        }
     }
 
     //// ****************************************************************************************

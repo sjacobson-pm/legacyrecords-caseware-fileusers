@@ -17,7 +17,6 @@ public class CaseWareFileUserRetrieverTests
     private const string FilePath = @"C:\ws\engagement.ac_";
     private const string LoginUserId = "login-user";
     private const string LoginUserPassword = "login-password";
-    private const string ServerFaultSubstring = "ServerFault";
 
     private readonly ICaseWareIntegrationService caseWareIntegrationService = Substitute.For<ICaseWareIntegrationService>();
     private readonly CWClient client = Substitute.For<CWClient>();
@@ -95,20 +94,20 @@ public class CaseWareFileUserRetrieverTests
     }
 
     [Fact]
-    public void GetFileSecurityGroupUserIdentifiers_NonRetryableException_RethrowsAndStillClosesFile()
+    public void GetFileSecurityGroupUserIdentifiers_FailureWithNoRetries_ClosesFileAndThrowsRetrievalException()
     {
         // Arrange
         this.caseWareIntegrationService.GetSecurityGroups(this.client)
-            .Returns<ICollection<string>>(_ => throw new InvalidOperationException("not a transient fault"));
-        var sut = this.CreateSut();
+            .Returns<ICollection<string>>(_ => throw new InvalidOperationException("read failed"));
+        var sut = this.CreateSut(maximumAttempts: 1);
 
         // Act / Assert
-        Should.Throw<InvalidOperationException>(() => sut.GetFileSecurityGroupUserIdentifiers(FilePath));
+        Should.Throw<CaseWareFileUserRetrievalException>(() => sut.GetFileSecurityGroupUserIdentifiers(FilePath));
         this.caseWareIntegrationService.Received(1).CloseCaseWareFile(this.client);
     }
 
     [Fact]
-    public void GetFileSecurityGroupUserIdentifiers_TransientServerFaultThenSuccess_RetriesAndReturnsUsers()
+    public void GetFileSecurityGroupUserIdentifiers_TransientFailureThenSuccess_RetriesAndReturnsUsers()
     {
         // Arrange
         var attempt = 0;
@@ -117,7 +116,7 @@ public class CaseWareFileUserRetrieverTests
             attempt++;
             if (attempt == 1)
             {
-                throw new Exception($"a {ServerFaultSubstring} was raised");
+                throw new Exception("a transient failure");
             }
 
             return new List<string> { Constants.FileSecurityGroupName };
@@ -135,11 +134,11 @@ public class CaseWareFileUserRetrieverTests
     }
 
     [Fact]
-    public void GetFileSecurityGroupUserIdentifiers_ServerFaultOnEveryAttempt_ThrowsRetrievalException()
+    public void GetFileSecurityGroupUserIdentifiers_FailureOnEveryAttempt_ThrowsRetrievalExceptionAfterExhaustingRetries()
     {
         // Arrange
         this.caseWareIntegrationService.GetSecurityGroups(this.client)
-            .Returns<ICollection<string>>(_ => throw new Exception($"persistent {ServerFaultSubstring}"));
+            .Returns<ICollection<string>>(_ => throw new Exception("persistent failure"));
         var sut = this.CreateSut(maximumAttempts: 2);
 
         // Act / Assert
@@ -168,7 +167,6 @@ public class CaseWareFileUserRetrieverTests
             {
                 LoginUserId = LoginUserId,
                 LoginUserPassword = LoginUserPassword,
-                ServerFaultExceptionSubstring = ServerFaultSubstring,
                 RetryRetrievingUsersMaximumAttempts = maximumAttempts,
             },
         });

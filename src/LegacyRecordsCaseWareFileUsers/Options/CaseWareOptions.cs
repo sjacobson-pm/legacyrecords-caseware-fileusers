@@ -17,8 +17,6 @@ public class CaseWareOptions
     [Required]
     public string LoginUserPassword { get; set; } = string.Empty;
 
-    public string ServerFaultExceptionSubstring { get; set; } = string.Empty;
-
     [Range(1, int.MaxValue)]
     public int RetryRetrievingUsersMaximumAttempts { get; set; }
 }

@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Threading;
 using CaseWare;
 using LegacyRecordsCaseWareFileUsers.Exceptions;
 using LegacyRecordsCaseWareFileUsers.Options;
@@ -8,18 +7,23 @@ using LegacyRecordsCaseWareFileUsers.Services.Interfaces;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using PlanteMoran.CaseWare;
+using Polly;
+using Polly.Retry;
 
 namespace LegacyRecordsCaseWareFileUsers.Services.Implementations;
 
 /// <summary>
 ///     Opens a local CaseWare file and reads the users assigned to its FILE security group, ensuring
-///     protection is enabled and retrying on transient server-fault errors.
+///     protection is enabled and retrying transient failures with a Polly resilience pipeline.
 /// </summary>
 internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
 {
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(1);
+
     private readonly ConfigurationOptions options;
     private readonly ICaseWareIntegrationService caseWareIntegrationService;
     private readonly ILogger<CaseWareFileUserRetriever> logger;
+    private readonly ResiliencePipeline retryPipeline;
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="CaseWareFileUserRetriever" /> class.
@@ -39,6 +43,7 @@ internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
         this.options = optionsAccessor.Value;
         this.caseWareIntegrationService = caseWareIntegrationService;
         this.logger = logger;
+        this.retryPipeline = this.BuildRetryPipeline();
     }
 
     /// <inheritdoc />
@@ -46,12 +51,11 @@ internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(caseWareFilePath);
 
-        ICollection<string> users = new List<string>();
-
-        var retrievedSuccessfully = Retry(
-            attempt =>
+        try
+        {
+            return this.retryPipeline.Execute(() =>
             {
-                this.logger.LogDebug("Trying to retrieve FILE security group users - attempt #{Attempt}...", attempt);
+                ICollection<string> users = new List<string>();
 
                 this.RunWithCaseWareClient(
                     client =>
@@ -61,45 +65,45 @@ internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
                         users = this.GetUsersIfSecurityGroupExists(securityGroups, Constants.FileSecurityGroupName, client);
                     },
                     caseWareFilePath);
-            },
-            ex => ex.Message.Contains(this.options.CaseWare.ServerFaultExceptionSubstring),
-            TimeSpan.FromSeconds(1),
-            this.options.CaseWare.RetryRetrievingUsersMaximumAttempts);
 
-        if (!retrievedSuccessfully)
-        {
-            throw new CaseWareFileUserRetrievalException(
-                $"Unable to retrieve users from the CaseWare file due to a '{this.options.CaseWare.ServerFaultExceptionSubstring}' exception.");
+                return users;
+            });
         }
-
-        return users;
+        catch (Exception ex)
+        {
+            throw new CaseWareFileUserRetrievalException($"Unable to retrieve users from the CaseWare file '{caseWareFilePath}'.", ex);
+        }
     }
 
-    private static bool Retry(Action<int> code, Func<Exception, bool> retryIfCode, TimeSpan retryInterval, int maxAttemptCount)
+    private ResiliencePipeline BuildRetryPipeline()
     {
-        for (var attempted = 0; attempted < maxAttemptCount; attempted++)
+        // RetryRetrievingUsersMaximumAttempts is the total number of attempts; Polly counts retries.
+        var maxRetryAttempts = this.options.CaseWare.RetryRetrievingUsersMaximumAttempts - 1;
+
+        if (maxRetryAttempts < 1)
         {
-            try
-            {
-                if (attempted > 0)
-                {
-                    Thread.Sleep(retryInterval);
-                }
-
-                code(attempted + 1);
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                if (!retryIfCode(ex))
-                {
-                    throw;
-                }
-            }
+            // a single attempt with no retries; Polly requires MaxRetryAttempts to be at least one
+            return ResiliencePipeline.Empty;
         }
 
-        return false;
+        return new ResiliencePipelineBuilder()
+            .AddRetry(new RetryStrategyOptions
+            {
+                ShouldHandle = new PredicateBuilder().Handle<Exception>(),
+                MaxRetryAttempts = maxRetryAttempts,
+                Delay = RetryDelay,
+                BackoffType = DelayBackoffType.Constant,
+                OnRetry = args =>
+                {
+                    this.logger.LogDebug(
+                        "Retrying FILE security group retrieval after a transient failure (retry {RetryAttempt}): {Error}",
+                        args.AttemptNumber + 1,
+                        args.Outcome.Exception?.Message);
+
+                    return default;
+                },
+            })
+            .Build();
     }
 
     private void RunWithCaseWareClient(Action<CWClient> code, string caseWareFilePath)
