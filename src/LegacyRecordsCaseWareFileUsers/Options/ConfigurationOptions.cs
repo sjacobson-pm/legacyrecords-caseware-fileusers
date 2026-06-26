@@ -9,8 +9,6 @@ namespace LegacyRecordsCaseWareFileUsers.Options;
 [ExcludeFromCodeCoverage(Justification = "There is nothing to test in this class at this point.")]
 public class ConfigurationOptions
 {
-    public EmailOptions Email { get; set; } = null!;
-
     // Bound from a custom (Serilog-shaped) section rather than the standard "Logging" key so the
     // editor's Microsoft appsettings JSON schema does not flag the custom output-template settings.
     [ConfigurationKeyName("ApplicationLogging")]
@@ -27,4 +25,6 @@ public class ConfigurationOptions
     public OutputOptions Output { get; set; } = new();
 
     public InputOptions Input { get; set; } = new();
+
+    public ProcessingOptions Processing { get; set; } = new();
 }

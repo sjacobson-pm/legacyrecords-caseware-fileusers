@@ -13,7 +13,4 @@ public class ConnectionStringOptions
 
     [Required]
     public string CaseWareFileManagement { get; set; } = string.Empty;
-
-    [Required]
-    public string CaseWareUsers { get; set; } = string.Empty;
 }

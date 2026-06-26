@@ -74,6 +74,37 @@ public class WorkspaceManagerTests
         });
     }
 
+    [Fact]
+    public void PrepareThenCleanUpWorkspaceRoot_CreatesAndThenRemovesTheRoot()
+    {
+        RunWithTempRoot(root =>
+        {
+            var sut = CreateSut(root);
+            sut.PrepareWorkspaceRoot();
+
+            var workspace = sut.CreateWorkspace();
+            File.WriteAllText(Path.Combine(workspace, "file.ac_"), "data");
+            var workspaceRoot = Directory.GetParent(workspace)!.FullName;
+            Directory.Exists(workspaceRoot).ShouldBeTrue();
+
+            sut.CleanUpWorkspaceRoot();
+
+            Directory.Exists(workspaceRoot).ShouldBeFalse();
+            Directory.Exists(workspace).ShouldBeFalse();
+        });
+    }
+
+    [Fact]
+    public void CleanUpWorkspaceRoot_WhenRootDoesNotExist_DoesNotThrow()
+    {
+        RunWithTempRoot(root =>
+        {
+            var sut = CreateSut(root);
+
+            Should.NotThrow(() => sut.CleanUpWorkspaceRoot());
+        });
+    }
+
     private static void RunWithTempRoot(Action<string> test)
     {
         var root = Path.Combine(Path.GetTempPath(), "wm-test-" + Guid.NewGuid().ToString("N"));

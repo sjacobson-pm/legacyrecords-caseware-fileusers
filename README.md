@@ -7,24 +7,40 @@ an Excel spreadsheet grouped by file.
 
 ## What it does
 
-For each input file the utility:
+A run is structured into four phases so external systems (SQL Server, Active Directory, CaseWare
+Working Papers) are touched the minimum number of times regardless of batch size:
 
-1. Resolves the file location — an integer input is looked up in the file-management database to get
-   its UNC path; a non-integer input is treated as a UNC path directly.
-2. Copies the `.ac_` file into an isolated, per-file local workspace (so files never interfere with
-   one another) and opens it with `ICaseWareIntegrationService.OpenCaseWareFile`.
-3. Ensures file protection is enabled, then reads the users in the `FILE` security group (retrying on
-   transient CaseWare server faults).
-4. Maps the CaseWare user identifiers to staff records, then removes any members of the configured
-   Active Directory CaseWare support team.
-5. Cleans up the workspace.
+1. **Resolve file paths.** Integer inputs are looked up in the file-management database in a single
+   bounded query (`WHERE Id IN (…)`); non-integer inputs are treated as UNC paths directly.
+2. **Read FILE-group identifiers (parallel, CaseWare only).** Each file is copied into an isolated,
+   per-file local workspace, opened with `ICaseWareIntegrationService.OpenCaseWareFile`, has its
+   protection ensured, has its `FILE` security group read (retrying on transient CaseWare faults), and
+   is closed. Files are processed concurrently up to `Processing:MaxDegreeOfParallelism`. No database
+   or Active Directory work happens in this phase.
+3. **Resolve staff (single bounded query).** Once Phase 2 has surfaced every CaseWare user identifier
+   that actually appears across the run, one bounded staff query (`WHERE CaseWareUserIdentifier IN
+   (…)`) fetches just those staff records. If no identifiers were seen, the database is not touched
+   at all.
+4. **Map and emit.** Identifiers are mapped to staff in memory, the configured Active Directory
+   support-team membership is loaded **once** (the result is cached for the whole run), and support
+   users are removed from each file's list. A single spreadsheet is then written, grouped by file,
+   listing each retained user's **full name** and **office**, along with any errors encountered.
 
-Finally it writes a single spreadsheet, grouped by file, listing each retained user's **full name**
-and **office**, along with any errors encountered.
+The spreadsheet preserves input order even when Phase 2 is parallel. Processing is resilient: if a
+file fails, its error is recorded and the remaining files still run; if an individual user cannot be
+mapped to a staff record, that user-level error is recorded and the remaining users still run. Press
+`Ctrl+C` to cancel a run cleanly (no spreadsheet is produced; the process exits with code `2`).
 
-Processing is resilient: if a file fails, its error is recorded and the remaining files still run; if
-an individual user cannot be mapped, that user-level error is recorded and the remaining users still
-run.
+### How it scales
+
+Per run, the utility issues **at most two SQL queries** (file-paths and staff) and **at most one
+Active Directory query** (the support-team group), regardless of how many files are in the batch.
+The memory footprint is bounded by what actually appears in the input — only the file IDs in the
+batch, only the staff identifiers seen across all files, and only the members of the support-team
+group — never the size of the underlying tables.
+
+Phase 2 is the wall-clock-dominant phase. Lowering `Processing:MaxDegreeOfParallelism` to `1`
+serializes CaseWare access if concurrent COM sessions misbehave on a particular host.
 
 ## Prerequisites
 
@@ -32,8 +48,8 @@ run.
 - [.NET 10 SDK](https://dotnet.microsoft.com/download).
 - **CaseWare Working Papers** installed on the host — `PlanteMoran.CaseWare` is an x64 COM
   integration and activates Working Papers at runtime.
-- Network access to the two SQL Server databases (see [Configuration](#configuration)) and to the
-  Active Directory domain used for support-user removal.
+- Network access to the CaseWare File Management SQL Server database (see
+  [Configuration](#configuration)) and to the Active Directory domain used for support-user removal.
 - Access to the Plante Moran VSTS NuGet feed to restore the `PlanteMoran.CaseWare` package.
 
 ## Usage
@@ -54,8 +70,6 @@ Both options are optional and fall back to configuration:
   timestamped file (`FileUsers_yyyyMMdd_HHmmss.xlsx`) is written to `Output:Directory` (defaulting to
   the current working directory).
 
-Press `Ctrl+C` to cancel a run.
-
 ### Example input file
 
 ```text
@@ -72,12 +86,11 @@ message if a required connection string or CaseWare credential is missing.
 
 | Section             | Key                                   | Purpose                                                              |
 | ------------------- | ------------------------------------- | -------------------------------------------------------------------- |
-| `ConnectionStrings` | `CaseWareFileManagement` *(required)* | Files database (`dbo.CaseWareFilesForApplications`) — ID → UNC path.  |
-| `ConnectionStrings` | `CaseWareUsers` *(required)*          | Staff database (`Lookups.ViewActiveStaff`) — identifier → staff.      |
+| `ConnectionStrings` | `CaseWareFileManagement` *(required)* | CaseWare File Management database — file IDs (`dbo.CaseWareFilesForApplications`) and staff (`Lookups.ViewActiveStaff`). |
 | `CaseWare`          | `LoginUserId` *(required)*            | CaseWare login used to open files.                                   |
 | `CaseWare`          | `LoginUserPassword` *(required)*      | CaseWare login password.                                             |
-| `CaseWare`          | `ServerFaultExceptionSubstring`       | Substring identifying a transient server fault that should retry.    |
 | `CaseWare`          | `RetryRetrievingUsersMaximumAttempts` | Maximum attempts when reading the security group (default `3`).      |
+| `Processing`        | `MaxDegreeOfParallelism`              | Files processed concurrently; `0` (or less) uses the processor count.|
 | `ActiveDirectory`   | `DomainName`                          | Domain queried for the support-team group.                           |
 | `ActiveDirectory`   | `CaseWareSupportTeamGroupName`        | AD group whose members are removed from the results.                 |
 | `Workspace`         | `RootPath`                            | Root for per-file workspaces (defaults to the OS temp folder).       |
@@ -88,8 +101,9 @@ message if a required connection string or CaseWare credential is missing.
 > The local-only secrets file `src/LegacyRecordsCaseWareFileUsers/appsettings.local.json` is checked
 > in with empty placeholders for you to fill in. It is excluded from source control.
 
-Active Directory settings are optional: if the support group cannot be queried, the error is logged
-and processing continues without removing support users.
+Active Directory settings are optional: if the support group cannot be queried (or `DomainName` /
+`CaseWareSupportTeamGroupName` is blank), the error is logged once at start-up and processing
+continues without removing support users.
 
 ## Project structure
 
@@ -102,8 +116,8 @@ src/LegacyRecordsCaseWareFileUsers/
 │   └── Implementations/       # input reading, workspace, CaseWare retrieval,
 │                              #   staff mapping, support-user filtering, output
 ├── Data/
-│   ├── Contexts/              # EF Core DbContexts (one per database)
-│   ├── Repositories/          # file-path and staff repositories
+│   ├── Contexts/              # EF Core DbContext for the file-management database
+│   ├── Repositories/          # CaseWare-files and staff repositories
 │   └── Domain/                # database entities
 ├── Models/                    # input/result models
 ├── Options/                   # strongly-typed configuration

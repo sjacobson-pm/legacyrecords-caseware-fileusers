@@ -25,19 +25,21 @@ public static class ServiceCollectionExtensions
     /// <returns>The same service collection, to allow chaining.</returns>
     public static IServiceCollection AddConsoleAppServices(this IServiceCollection services, ConfigurationOptions configOptions)
     {
-        // database contexts (one per database / connection string)
-        services.AddDbContext<CaseWareFilesDbContext>(o => o.UseSqlServer(configOptions.ConnectionStrings.CaseWareFileManagement));
-        services.AddDbContext<StaffDbContext>(o => o.UseSqlServer(configOptions.ConnectionStrings.CaseWareUsers));
+        // database context (the shared CaseWare File Management database)
+        services.AddDbContext<CaseWareFileManagementDbContext>(o => o.UseSqlServer(configOptions.ConnectionStrings.CaseWareFileManagement));
 
         // repositories
-        services.AddScoped<IFilePathRepository, FilePathRepository>();
+        services.AddScoped<ICaseWareFilesForApplicationsRepository, CaseWareFilesForApplicationsRepository>();
         services.AddScoped<IStaffRepository, StaffRepository>();
 
         // application services
         services.AddScoped<IInputReader, InputReader>();
         services.AddScoped<IWorkspaceManager, WorkspaceManager>();
         services.AddScoped<ICaseWareFileUserRetriever, CaseWareFileUserRetriever>();
-        services.AddScoped<ISupportUserFilter, SupportUserFilter>();
+
+        // SupportUserFilter caches the support-team AD membership for the lifetime of the instance,
+        // so register it as a singleton to share that cache across the whole run
+        services.AddSingleton<ISupportUserFilter, SupportUserFilter>();
         services.AddScoped<IFileUserSpreadsheetWriter, FileUserSpreadsheetWriter>();
         services.AddScoped<IFileUserService, FileUserService>();
 

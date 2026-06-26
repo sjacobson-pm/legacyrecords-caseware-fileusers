@@ -32,6 +32,8 @@ internal class Program
 {
     public static readonly Guid EngineInstanceId = Guid.NewGuid();
 
+    private const int CancelledExitCode = 2;
+
     private static IServiceCollection services = null!;
     private static IConfigurationRoot configuration = null!;
     private static ConfigurationOptions configOptions = null!;
@@ -48,12 +50,31 @@ internal class Program
             ConfigureServices();
             ConfigureLogging();
 
-            log.Information("Starting {applicationTitle} with arguments {arguments}", Constants.ApplicationTitle, JsonConvert.SerializeObject(args));
+            log.Information("Starting {ApplicationTitle} with arguments {Arguments}", Constants.ApplicationTitle, JsonConvert.SerializeObject(args));
 
             await Parser.Default.ParseArguments<ProduceFileUserListOptions>(args)
                         .MapResult(
                              async options => await ProduceFileUserListAsync(options),
                              async errors => await HandleCommandLineParsingErrorsAsync(args, errors));
+        }
+        catch (OperationCanceledException)
+        {
+            // the run was cancelled (for example, the user pressed Ctrl+C); this is expected and is
+            // not an error, so report it cleanly without a stack trace
+            log.Warning("Processing was cancelled before it completed; no spreadsheet was produced.");
+
+            exitCode = CancelledExitCode;
+        }
+        catch (OptionsValidationException ex)
+        {
+            // a required configuration value is missing or invalid; report it cleanly, no stack trace
+            // (logging is always configured by the time options are validated)
+            var failures = string.Join(Environment.NewLine, ex.Failures.Select(failure => $"  - {failure}"));
+            var message = $"The application cannot start because required configuration is missing or invalid:{Environment.NewLine}{failures}";
+
+            log.Fatal("{ConfigurationError:l}", message);
+
+            exitCode = -1;
         }
         catch (Exception ex)
         {
@@ -62,14 +83,12 @@ internal class Program
                 throw;
             }
 
-            const string Message = "An unhandled exception has occurred!";
-
-            log.Fatal(ex, Message);
+            log.Fatal(ex, "An unhandled exception has occurred!");
 
             exitCode = -1;
         }
 
-        log.Information("Exiting {applicationTitle} with exit code {exitCode}...", Constants.ApplicationTitle, exitCode);
+        log.Information("Exiting {ApplicationTitle} with exit code {ExitCode}...", Constants.ApplicationTitle, exitCode);
         await Log.CloseAndFlushAsync();
 
         WaitForExitKeyPress();
@@ -109,7 +128,7 @@ internal class Program
 
         if (!errorsList.IsHelp() && !errorsList.IsVersion())
         {
-            log.Error("The following command line parsing errors occurred: {@commandLineParsingErrors}", errorsList);
+            log.Error("The following command line parsing errors occurred: {@CommandLineParsingErrors}", errorsList);
 
             await Task.CompletedTask;
 
@@ -117,7 +136,7 @@ internal class Program
         }
         else
         {
-            log.Information("Help was requested: {helpArgs}", commandLineArgs);
+            log.Information("Help was requested: {HelpArgs}", commandLineArgs);
         }
     }
 
@@ -234,38 +253,56 @@ internal class Program
 
     private static async Task ProduceFileUserListAsync(ProduceFileUserListOptions options)
     {
-        using (LogContext.PushProperty(LogContextProperties.ExecutionMode, Constants.ExecutionModes.ProduceFileUserList))
+        using var property = LogContext.PushProperty(LogContextProperties.ExecutionMode, Constants.ExecutionModes.ProduceFileUserList);
+        using var cancellationTokenSource = new CancellationTokenSource();
+
+        void CancelKeyPressHandler(object? sender, ConsoleCancelEventArgs eventArgs)
         {
-            using var cancellationTokenSource = new CancellationTokenSource();
+            eventArgs.Cancel = true;
 
-            void CancelKeyPressHandler(object? sender, ConsoleCancelEventArgs eventArgs)
-            {
-                eventArgs.Cancel = true;
+            // ReSharper disable once AccessToDisposedClosure -- the handler is unsubscribed in the finally below before the token source is disposed
+            cancellationTokenSource.Cancel();
+        }
 
-                // ReSharper disable once AccessToDisposedClosure -- the handler is unsubscribed in the finally below before the token source is disposed
-                cancellationTokenSource.Cancel();
-            }
+        Console.CancelKeyPress += CancelKeyPressHandler;
 
-            Console.CancelKeyPress += CancelKeyPressHandler;
+        try
+        {
+            var serviceProvider = services.BuildServiceProvider();
 
-            try
-            {
-                var serviceProvider = services.BuildServiceProvider();
+            // no generic host is present to run ValidateOnStart automatically, so trigger the
+            // registered configuration validation explicitly before doing any work
+            serviceProvider.GetRequiredService<IStartupValidator>().Validate();
 
-                // no generic host is present to run ValidateOnStart automatically, so trigger the
-                // registered configuration validation explicitly before doing any work
-                serviceProvider.GetRequiredService<IStartupValidator>().Validate();
+            LogOptionalConfigurationWarnings();
 
-                using var scope = serviceProvider.CreateScope();
-                var fileUserService = scope.ServiceProvider.GetRequiredService<IFileUserService>();
+            using var scope = serviceProvider.CreateScope();
+            var fileUserService = scope.ServiceProvider.GetRequiredService<IFileUserService>();
 
-                await fileUserService.RunAsync(options.InputFilesPath, options.OutputPath, cancellationTokenSource.Token);
-            }
-            finally
-            {
-                // unsubscribe before the token source is disposed so the handler cannot outlive it
-                Console.CancelKeyPress -= CancelKeyPressHandler;
-            }
+            await fileUserService.RunAsync(options.InputFilesPath, options.OutputPath, cancellationTokenSource.Token);
+        }
+        finally
+        {
+            // unsubscribe before the token source is disposed so the handler cannot outlive it
+            Console.CancelKeyPress -= CancelKeyPressHandler;
+        }
+    }
+
+    /// <summary>
+    ///     Writes a warning to the console and the logger for each optional configuration value that
+    ///     is not provided. These do not stop processing, but the reduced behavior is noted.
+    /// </summary>
+    private static void LogOptionalConfigurationWarnings()
+    {
+        if (string.IsNullOrWhiteSpace(configOptions.Logging.ApplicationInsights.ConnectionString))
+        {
+            log.Warning("Application Insights connection string is not configured; telemetry will not be sent.");
+        }
+
+        if (string.IsNullOrWhiteSpace(configOptions.ActiveDirectory.DomainName) ||
+            string.IsNullOrWhiteSpace(configOptions.ActiveDirectory.CaseWareSupportTeamGroupName))
+        {
+            log.Warning("Active Directory is not fully configured; CaseWare support users will not be removed from the results.");
         }
     }
 }

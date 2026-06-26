@@ -14,13 +14,13 @@ namespace LegacyRecordsCaseWareFileUsers.Data.Repositories;
 /// </summary>
 internal class StaffRepository : IStaffRepository
 {
-    private readonly StaffDbContext context;
+    private readonly CaseWareFileManagementDbContext context;
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="StaffRepository" /> class.
     /// </summary>
-    /// <param name="context">The staff database context.</param>
-    public StaffRepository(StaffDbContext context)
+    /// <param name="context">The CaseWare File Management database context.</param>
+    public StaffRepository(CaseWareFileManagementDbContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
@@ -28,11 +28,19 @@ internal class StaffRepository : IStaffRepository
     }
 
     /// <inheritdoc />
-    public async Task<ICollection<Staff>> GetStaffByCaseWareUserIdentifiersAsync(
-        ICollection<string> caseWareUserIdentifiers,
+    public async Task<ICollection<Staff>> GetStaffByIdentifiersAsync(
+        IReadOnlyCollection<string> caseWareUserIdentifiers,
         CancellationToken cancellationToken = default)
     {
-        return await this.context.Staff.Where(o => caseWareUserIdentifiers.Contains(o.CaseWareUserIdentifier))
+        ArgumentNullException.ThrowIfNull(caseWareUserIdentifiers);
+
+        if (caseWareUserIdentifiers.Count == 0)
+        {
+            return new List<Staff>();
+        }
+
+        return await this.context.Staff
+                         .Where(o => caseWareUserIdentifiers.Contains(o.CaseWareUserIdentifier))
                          .ToListAsync(cancellationToken)
                          .ConfigureAwait(false);
     }

@@ -1,13 +1,19 @@
 ﻿namespace LegacyRecordsCaseWareFileUsers.Services.Interfaces;
 
 /// <summary>
-///     Manages isolated local workspaces used to download and open individual CaseWare files.
+///     Manages the local workspace: the shared root directory for a run and the isolated per-file
+///     workspaces created beneath it.
 /// </summary>
 public interface IWorkspaceManager
 {
     /// <summary>
-    ///     Creates a new, unique workspace directory dedicated to a single file so concurrent or
-    ///     sequential files do not interfere with one another.
+    ///     Creates the workspace root directory in preparation for a run.
+    /// </summary>
+    void PrepareWorkspaceRoot();
+
+    /// <summary>
+    ///     Creates a new, unique workspace directory beneath the root, dedicated to a single file so
+    ///     concurrent files do not interfere with one another.
     /// </summary>
     /// <returns>The full path of the created workspace directory.</returns>
     string CreateWorkspace();
@@ -21,8 +27,13 @@ public interface IWorkspaceManager
     string CopyFileToWorkspace(string sourceUncPath, string workspaceDirectory);
 
     /// <summary>
-    ///     Deletes a workspace directory and its contents, swallowing any cleanup errors.
+    ///     Deletes a single per-file workspace directory and its contents, swallowing cleanup errors.
     /// </summary>
     /// <param name="workspaceDirectory">The workspace directory to delete.</param>
     void DeleteWorkspace(string workspaceDirectory);
+
+    /// <summary>
+    ///     Deletes the workspace root and everything beneath it, swallowing cleanup errors.
+    /// </summary>
+    void CleanUpWorkspaceRoot();
 }

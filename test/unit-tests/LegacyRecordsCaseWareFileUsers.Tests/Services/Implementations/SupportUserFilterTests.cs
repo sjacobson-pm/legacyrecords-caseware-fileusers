@@ -69,6 +69,23 @@ public class SupportUserFilterTests
     }
 
     [Fact]
+    public void RemoveSupportUsers_CalledForManyFiles_QueriesActiveDirectoryAtMostOnce()
+    {
+        // Arrange
+        var sut = CreateSut();
+        sut.Configure().GetSupportTeamUserPrincipalNames().Returns(new List<string> { "someone@plantemoran.com" });
+
+        // Act (simulate processing many files in a row)
+        for (var i = 0; i < 10; i++)
+        {
+            sut.RemoveSupportUsers(new List<Staff> { MakeStaff($"User {i}", $"user{i}@plantemoran.com") });
+        }
+
+        // Assert: the AD lookup is cached for the lifetime of the instance, so it runs at most once
+        sut.Received(1).GetSupportTeamUserPrincipalNames();
+    }
+
+    [Fact]
     public void RemoveSupportUsers_NullStaff_Throws()
     {
         // Arrange

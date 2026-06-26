@@ -12,12 +12,16 @@ using Microsoft.Extensions.Options;
 namespace LegacyRecordsCaseWareFileUsers.Services.Implementations;
 
 /// <summary>
-///     Removes staff that belong to the configured CaseWare support team Active Directory group.
+///     Removes staff that belong to the configured CaseWare support team Active Directory group. The
+///     AD lookup is performed lazily on the first call to <see cref="RemoveSupportUsers" /> and the
+///     resulting membership list is cached for the lifetime of the instance, so the filter can be
+///     reused across many files without re-querying AD.
 /// </summary>
 internal class SupportUserFilter : ISupportUserFilter
 {
     private readonly ConfigurationOptions options;
     private readonly ILogger<SupportUserFilter> logger;
+    private readonly Lazy<IReadOnlyCollection<string>> supportTeamUserPrincipalNames;
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="SupportUserFilter" /> class.
@@ -31,6 +35,10 @@ internal class SupportUserFilter : ISupportUserFilter
 
         this.options = optionsAccessor.Value;
         this.logger = logger;
+
+        // ExecutionAndPublication (the default) makes the lazy thread-safe and guarantees the
+        // initialization function runs at most once even when callers race on the first access
+        this.supportTeamUserPrincipalNames = new Lazy<IReadOnlyCollection<string>>(this.LoadSupportTeamUserPrincipalNames);
     }
 
     /// <inheritdoc />
@@ -38,34 +46,25 @@ internal class SupportUserFilter : ISupportUserFilter
     {
         ArgumentNullException.ThrowIfNull(staff);
 
-        this.logger.LogInformation("Start removing CaseWare support users from the list of staff with access...");
+        var supportUserPrincipalNames = this.supportTeamUserPrincipalNames.Value;
 
-        try
+        if (supportUserPrincipalNames.Count == 0)
         {
-            var supportUserPrincipalNames = this.GetSupportTeamUserPrincipalNames();
+            // either the AD lookup failed (already logged) or the support team is empty; nothing to
+            // remove
+            return staff;
+        }
 
-            foreach (var userPrincipalName in supportUserPrincipalNames)
+        foreach (var userPrincipalName in supportUserPrincipalNames)
+        {
+            var supportStaff = staff.SingleOrDefault(o =>
+                string.Equals(o.UserPrincipalName, userPrincipalName, StringComparison.InvariantCultureIgnoreCase));
+
+            if (supportStaff != null)
             {
-                var supportStaff = staff.SingleOrDefault(o =>
-                    string.Equals(o.UserPrincipalName, userPrincipalName, StringComparison.InvariantCultureIgnoreCase));
-
-                if (supportStaff != null)
-                {
-                    staff.Remove(supportStaff);
-                }
+                staff.Remove(supportStaff);
             }
         }
-        catch (Exception ex)
-        {
-            // if an error occurs, just log it and return the current list of staff so processing is
-            // not held up
-            this.logger.LogError(
-                ex,
-                "An error occurred getting the members of the {GroupName} AD group.",
-                this.options.ActiveDirectory.CaseWareSupportTeamGroupName);
-        }
-
-        this.logger.LogInformation("End removing CaseWare support users from the list of staff with access...");
 
         return staff;
     }
@@ -93,5 +92,35 @@ internal class SupportUserFilter : ISupportUserFilter
                              .Where(userPrincipalName => !string.IsNullOrWhiteSpace(userPrincipalName))
                              .Select(userPrincipalName => userPrincipalName!.ToLowerInvariant())
                              .ToList();
+    }
+
+    private IReadOnlyCollection<string> LoadSupportTeamUserPrincipalNames()
+    {
+        this.logger.LogInformation(
+            "Loading members of the {GroupName} Active Directory group...",
+            this.options.ActiveDirectory.CaseWareSupportTeamGroupName);
+
+        try
+        {
+            var members = this.GetSupportTeamUserPrincipalNames();
+
+            this.logger.LogInformation(
+                "Loaded {SupportTeamMemberCount} member(s) of the {GroupName} Active Directory group.",
+                members.Count,
+                this.options.ActiveDirectory.CaseWareSupportTeamGroupName);
+
+            return new List<string>(members);
+        }
+        catch (Exception ex)
+        {
+            // if the AD lookup fails, log it and treat the support team as empty so processing is not
+            // held up; the empty result is cached so the failure is not retried on every file
+            this.logger.LogError(
+                ex,
+                "An error occurred getting the members of the {GroupName} AD group; no support users will be removed.",
+                this.options.ActiveDirectory.CaseWareSupportTeamGroupName);
+
+            return Array.Empty<string>();
+        }
     }
 }
