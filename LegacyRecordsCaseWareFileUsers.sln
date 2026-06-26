@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 16
-VisualStudioVersion = 16.0.31702.278
+# Visual Studio Version 18
+VisualStudioVersion = 18.7.11919.86 stable
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{795100F6-1F0B-48B5-B33D-C9E461538C73}"
 EndProject
@@ -14,13 +14,14 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "misc", "misc", "{A40D81D5-0
 		.markdownlint.json = .markdownlint.json
 		.markdownlintignore = .markdownlintignore
 		CONTRIBUTING.md = CONTRIBUTING.md
+		LegacyRecordsCaseWareFileUsers.sln.DotSettings = LegacyRecordsCaseWareFileUsers.sln.DotSettings
 		nuget.config = nuget.config
 		package.json = package.json
-		LegacyRecordsCaseWareFileUsers.sln.DotSettings = LegacyRecordsCaseWareFileUsers.sln.DotSettings
 		prettier.config.js = prettier.config.js
 		README.md = README.md
 		StyleCop.Analyzers.ruleset = StyleCop.Analyzers.ruleset
 		stylecop.json = stylecop.json
+		WORKFLOW.md = WORKFLOW.md
 	EndProjectSection
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "unit-tests", "unit-tests", "{FC06E8E0-EFDD-462C-919A-7D2609473A37}"

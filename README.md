@@ -42,6 +42,10 @@ group — never the size of the underlying tables.
 Phase 2 is the wall-clock-dominant phase. Lowering `Processing:MaxDegreeOfParallelism` to `1`
 serializes CaseWare access if concurrent COM sessions misbehave on a particular host.
 
+For a single picture of the same flow with every external boundary the run crosses (SQL, network
+shares, the local workspace, CaseWare COM, Active Directory, the output file, Application Insights),
+see [WORKFLOW.md](WORKFLOW.md).
+
 ## Prerequisites
 
 - Windows (the utility targets `net10.0-windows` and runs as a 64-bit process).
