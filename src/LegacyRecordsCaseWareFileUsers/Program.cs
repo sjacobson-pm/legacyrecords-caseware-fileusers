@@ -8,11 +8,13 @@ using System.Threading;
 using System.Threading.Tasks;
 using CommandLine;
 using LegacyRecordsCaseWareFileUsers.CommandLineOptions;
+using LegacyRecordsCaseWareFileUsers.Data.Contexts;
 using LegacyRecordsCaseWareFileUsers.Helpers.Extensions;
 using LegacyRecordsCaseWareFileUsers.Logging;
 using LegacyRecordsCaseWareFileUsers.Options;
 using LegacyRecordsCaseWareFileUsers.Services.Interfaces;
 using Microsoft.ApplicationInsights.Extensibility;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -209,11 +211,51 @@ internal class Program
                                 outputTemplate: configOptions.Logging.ConsoleOutputTemplate,
                                 levelSwitch: LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.Console));
 
+        ConfigureFileLogging(loggerConfiguration);
         ConfigureApplicationInsightsLogging(loggerConfiguration);
 
         Log.Logger = loggerConfiguration.CreateLogger();
 
         log = Log.ForContext<Program>();
+    }
+
+    /// <summary>
+    ///     Adds the rolling-file sink when a file path is configured. A missing or invalid path
+    ///     disables the sink rather than failing start-up.
+    /// </summary>
+    /// <param name="loggerConfiguration">The logger configuration to add the sink to.</param>
+    private static void ConfigureFileLogging(LoggerConfiguration loggerConfiguration)
+    {
+        var fileOptions = configOptions.Logging.File;
+
+        if (string.IsNullOrWhiteSpace(fileOptions.Path))
+        {
+            return;
+        }
+
+        try
+        {
+            // fall back to the console template when none is configured for the file sink
+            var outputTemplate = string.IsNullOrWhiteSpace(fileOptions.OutputTemplate)
+                ? configOptions.Logging.ConsoleOutputTemplate
+                : fileOptions.OutputTemplate;
+
+            // default to a daily rolling interval when the configured value is blank or invalid
+            var rollingInterval = Enum.TryParse<RollingInterval>(fileOptions.RollingInterval, ignoreCase: true, out var parsed)
+                ? parsed
+                : RollingInterval.Day;
+
+            loggerConfiguration.WriteTo.File(
+                path: fileOptions.Path,
+                outputTemplate: outputTemplate,
+                rollingInterval: rollingInterval,
+                retainedFileCountLimit: fileOptions.RetainedFileCountLimit,
+                levelSwitch: LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.File));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"File logging is disabled due to an invalid configuration: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -276,6 +318,15 @@ internal class Program
 
             LogOptionalConfigurationWarnings();
 
+            // verify database connectivity before any work begins so a misconfigured connection
+            // string (for example, a self-signed certificate that needs TrustServerCertificate=True)
+            // fails fast with a clean message instead of crashing partway through a run
+            if (!await ProbeDatabaseConnectivityAsync(serviceProvider, cancellationTokenSource.Token).ConfigureAwait(false))
+            {
+                exitCode = -1;
+                return;
+            }
+
             using var scope = serviceProvider.CreateScope();
             var fileUserService = scope.ServiceProvider.GetRequiredService<IFileUserService>();
 
@@ -285,6 +336,50 @@ internal class Program
         {
             // unsubscribe before the token source is disposed so the handler cannot outlive it
             Console.CancelKeyPress -= CancelKeyPressHandler;
+        }
+    }
+
+    /// <summary>
+    ///     Verifies connectivity to the CaseWare File Management database before any work begins.
+    ///     A failure is logged as a clean message that names the connection-string field and hints
+    ///     at <c>TrustServerCertificate=True</c> for on-prem servers using self-signed certificates;
+    ///     no stack trace is emitted.
+    /// </summary>
+    /// <param name="serviceProvider">The configured service provider.</param>
+    /// <param name="cancellationToken">Token to monitor for cancellation requests.</param>
+    /// <returns><c>true</c> if the database is reachable; <c>false</c> otherwise.</returns>
+    private static async Task<bool> ProbeDatabaseConnectivityAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken)
+    {
+        log.Information("Verifying connectivity to the CaseWare File Management database...");
+
+        using var scope = serviceProvider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<CaseWareFileManagementDbContext>();
+
+        try
+        {
+            if (await context.Database.CanConnectAsync(cancellationToken).ConfigureAwait(false))
+            {
+                log.Information("CaseWare File Management database connectivity verified.");
+
+                return true;
+            }
+
+            log.Fatal(
+                "Could not connect to the CaseWare File Management database. " +
+                "Check ConnectionStrings:CaseWareFileManagement. " +
+                "If the SQL Server uses a self-signed certificate, add TrustServerCertificate=True to the connection string.");
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            log.Fatal(
+                "Could not connect to the CaseWare File Management database: {Reason:l}. " +
+                "Check ConnectionStrings:CaseWareFileManagement. " +
+                "If the SQL Server uses a self-signed certificate, add TrustServerCertificate=True to the connection string.",
+                ex.Message);
+
+            return false;
         }
     }
 

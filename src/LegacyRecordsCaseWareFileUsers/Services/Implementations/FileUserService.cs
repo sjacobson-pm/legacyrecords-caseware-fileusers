@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using LegacyRecordsCaseWareFileUsers.Data.Domain;
 using LegacyRecordsCaseWareFileUsers.Data.Repositories;
+using LegacyRecordsCaseWareFileUsers.Helpers;
 using LegacyRecordsCaseWareFileUsers.Models;
 using LegacyRecordsCaseWareFileUsers.Options;
 using LegacyRecordsCaseWareFileUsers.Services.Interfaces;
@@ -152,10 +153,12 @@ internal class FileUserService : IFileUserService
                 {
                     workItem.UncPath = uncPath;
                     workItem.DisplayName = $"{uncPath} (ID {item.FileId})";
+                    workItem.LogName = $"{LogPathFormatter.FormatForLog(uncPath)} (ID {item.FileId})";
                 }
                 else
                 {
                     workItem.DisplayName = $"File ID {item.FileId}";
+                    workItem.LogName = $"File ID {item.FileId}";
                     workItem.Errors.Add($"No known file was found in the database for ID {item.FileId}.");
                 }
             }
@@ -163,6 +166,7 @@ internal class FileUserService : IFileUserService
             {
                 workItem.UncPath = item.UncPath;
                 workItem.DisplayName = item.UncPath!;
+                workItem.LogName = LogPathFormatter.FormatForLog(item.UncPath);
             }
 
             workItems.Add(workItem);
@@ -219,12 +223,12 @@ internal class FileUserService : IFileUserService
                 this.logger.LogInformation(
                     "No users found in the {GroupName} security group for {File}.",
                     Constants.FileSecurityGroupName,
-                    workItem.DisplayName);
+                    workItem.LogName);
             }
         }
         catch (Exception ex)
         {
-            this.logger.LogError(ex, "An error occurred processing file {File}.", workItem.DisplayName);
+            this.logger.LogError(ex, "An error occurred processing file {File}.", workItem.LogName);
             workItem.Errors.Add($"Error processing file: {ex.Message}");
         }
         finally
@@ -339,7 +343,8 @@ internal class FileUserService : IFileUserService
     // the per-input state that flows through the three phases:
     //   Input             - the original parsed input
     //   UncPath           - the resolved UNC path, or null if it could not be resolved
-    //   DisplayName       - the human-readable label used in logging and the spreadsheet
+    //   DisplayName       - the full human-readable label written to the spreadsheet
+    //   LogName           - the compact label used in log messages (just file name and parent)
     //   UserIdentifiers   - the FILE-group identifiers read in Phase 1; null means the file was
     //                       never opened (Phase 1 was skipped because the file-ID lookup failed,
     //                       or it threw before any identifiers were read)
@@ -356,6 +361,8 @@ internal class FileUserService : IFileUserService
         public string? UncPath { get; set; }
 
         public string DisplayName { get; set; } = string.Empty;
+
+        public string LogName { get; set; } = string.Empty;
 
         public IReadOnlyList<string>? UserIdentifiers { get; set; }
 

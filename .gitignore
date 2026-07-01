@@ -367,3 +367,6 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# Per-developer launch profile (contains machine-specific paths like --input-files targets;
+# use Input:FilePath in appsettings.local.json instead)
+**/Properties/launchSettings.json

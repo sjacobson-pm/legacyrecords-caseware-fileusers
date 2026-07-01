@@ -57,8 +57,10 @@ internal class SupportUserFilter : ISupportUserFilter
 
         foreach (var userPrincipalName in supportUserPrincipalNames)
         {
-            var supportStaff = staff.SingleOrDefault(o =>
-                string.Equals(o.UserPrincipalName, userPrincipalName, StringComparison.InvariantCultureIgnoreCase));
+            var supportStaff = staff.SingleOrDefault(o => string.Equals(
+                o.UserPrincipalName,
+                userPrincipalName,
+                StringComparison.InvariantCultureIgnoreCase));
 
             if (supportStaff != null)
             {
@@ -109,7 +111,7 @@ internal class SupportUserFilter : ISupportUserFilter
                 members.Count,
                 this.options.ActiveDirectory.CaseWareSupportTeamGroupName);
 
-            return new List<string>(members);
+            return [..members];
         }
         catch (Exception ex)
         {
@@ -120,7 +122,7 @@ internal class SupportUserFilter : ISupportUserFilter
                 "An error occurred getting the members of the {GroupName} AD group; no support users will be removed.",
                 this.options.ActiveDirectory.CaseWareSupportTeamGroupName);
 
-            return Array.Empty<string>();
+            return [];
         }
     }
 }

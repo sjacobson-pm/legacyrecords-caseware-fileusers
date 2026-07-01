@@ -69,7 +69,8 @@ LegacyRecordsCaseWareFileUsers --input-files <path> [--output <path>]
 
 Both options are optional and fall back to configuration:
 
-- When `--input-files` is omitted, inputs are read from the `Input:Files` configuration array.
+- When `--input-files` is omitted, the input file is read from `Input:FilePath`; if that is empty,
+  inputs are read from the `Input:Files` inline array. (CLI > `Input:FilePath` > `Input:Files`.)
 - When `--output` is omitted, the path is taken from `Output:FilePath`; if that is empty, a
   timestamped file (`FileUsers_yyyyMMdd_HHmmss.xlsx`) is written to `Output:Directory` (defaulting to
   the current working directory).
@@ -86,7 +87,10 @@ Both options are optional and fall back to configuration:
 
 Settings are read from `appsettings.json`, overlaid by a git-ignored `appsettings.local.json` for
 local secrets. Required values are validated at start-up — the utility fails fast with a clear
-message if a required connection string or CaseWare credential is missing.
+message if a required connection string or CaseWare credential is missing. Connectivity to the
+CaseWare File Management database is verified before any per-file work begins, so a misconfigured
+connection string (for example, a self-signed certificate that needs `TrustServerCertificate=True`)
+also fails fast with a clean message and no stack trace.
 
 | Section             | Key                                   | Purpose                                                              |
 | ------------------- | ------------------------------------- | -------------------------------------------------------------------- |
@@ -99,8 +103,12 @@ message if a required connection string or CaseWare credential is missing.
 | `ActiveDirectory`   | `CaseWareSupportTeamGroupName`        | AD group whose members are removed from the results.                 |
 | `Workspace`         | `RootPath`                            | Root for per-file workspaces (defaults to the OS temp folder).       |
 | `Output`            | `Directory` / `FilePath`              | Default output location (see [Usage](#usage)).                       |
-| `Input`             | `Files`                               | Fallback inputs when `--input-files` is not supplied.                |
-| `ApplicationLogging`| —                                     | Serilog output templates, log levels, and Application Insights.       |
+| `Input`             | `FilePath`                            | Path to a text file with one input per line; used when `--input-files` is not supplied. |
+| `Input`             | `Files`                               | Inline fallback inputs when neither `--input-files` nor `Input:FilePath` is supplied. |
+| `ApplicationLogging`| —                                     | Serilog output templates, log levels, Application Insights, and the rolling file sink. |
+| `ApplicationLogging:File` | `Path`                          | Rolling log file path; the rolling-interval suffix is appended. When blank, the file sink is not added. |
+| `ApplicationLogging:File` | `RollingInterval`               | One of `Infinite`, `Year`, `Month`, `Day`, `Hour`, `Minute` (default `Day`). |
+| `ApplicationLogging:File` | `RetainedFileCountLimit`        | Maximum number of rolled files to keep on disk (default `31`).       |
 
 > The local-only secrets file `src/LegacyRecordsCaseWareFileUsers/appsettings.local.json` is checked
 > in with empty placeholders for you to fill in. It is excluded from source control.

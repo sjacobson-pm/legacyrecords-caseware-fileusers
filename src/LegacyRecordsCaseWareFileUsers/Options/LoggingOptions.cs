@@ -12,4 +12,6 @@ public class LoggingOptions
     public LogLevelOptions LogLevel { get; set; } = null!;
 
     public LoggingApplicationInsightsOptions ApplicationInsights { get; set; } = null!;
+
+    public LoggingFileOptions File { get; set; } = new();
 }

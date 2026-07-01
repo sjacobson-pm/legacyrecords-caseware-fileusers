@@ -95,6 +95,31 @@ public class WorkspaceManagerTests
     }
 
     [Fact]
+    public void DeleteWorkspace_WhenAFileInsideIsLocked_DoesNotThrowAndLeavesTheDirectoryBehind()
+    {
+        // simulates an antivirus scanner or open viewer holding a file open exclusively, which is
+        // the real-world cause of the "access denied" errors during workspace cleanup. The Polly
+        // retry exhausts and the warning is logged cleanly; processing must not be held up.
+        RunWithTempRoot(root =>
+        {
+            var sut = CreateSut(root);
+            var workspace = sut.CreateWorkspace();
+            var lockedFile = Path.Combine(workspace, "locked.pdf");
+            File.WriteAllText(lockedFile, "data");
+
+            using var holdOpen = new FileStream(lockedFile, FileMode.Open, FileAccess.Read, FileShare.None);
+
+            // Act
+            Should.NotThrow(() => sut.DeleteWorkspace(workspace));
+
+            // Assert: cleanup didn't crash the run, but the workspace is intentionally left in
+            // place (it could not be deleted while the file is locked)
+            Directory.Exists(workspace).ShouldBeTrue();
+            File.Exists(lockedFile).ShouldBeTrue();
+        });
+    }
+
+    [Fact]
     public void CleanUpWorkspaceRoot_WhenRootDoesNotExist_DoesNotThrow()
     {
         RunWithTempRoot(root =>

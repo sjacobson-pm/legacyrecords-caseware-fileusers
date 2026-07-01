@@ -69,17 +69,23 @@ internal class InputReader : IInputReader
     /// <inheritdoc />
     public IReadOnlyList<FileInputItem> ReadInputs(string? inputFilesPath)
     {
+        // precedence: --input-files command line argument, then Input:FilePath config, then the
+        // inline Input:Files config array
+        var resolvedPath = string.IsNullOrWhiteSpace(inputFilesPath)
+            ? this.options.Input.FilePath
+            : inputFilesPath;
+
         IEnumerable<string> rawValues;
 
-        if (!string.IsNullOrWhiteSpace(inputFilesPath))
+        if (!string.IsNullOrWhiteSpace(resolvedPath))
         {
-            if (!File.Exists(inputFilesPath))
+            if (!File.Exists(resolvedPath))
             {
-                throw new FileNotFoundException($"The input file '{inputFilesPath}' does not exist.", inputFilesPath);
+                throw new FileNotFoundException($"The input file '{resolvedPath}' does not exist.", resolvedPath);
             }
 
-            this.logger.LogInformation("Reading inputs from file {InputFilesPath}...", inputFilesPath);
-            rawValues = File.ReadAllLines(inputFilesPath);
+            this.logger.LogInformation("Reading inputs from file {InputFilesPath}...", resolvedPath);
+            rawValues = File.ReadAllLines(resolvedPath);
         }
         else
         {

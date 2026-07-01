@@ -1,6 +1,11 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using LegacyRecordsCaseWareFileUsers.Options;
 using LegacyRecordsCaseWareFileUsers.Services.Implementations;
+using Microsoft.Extensions.Logging;
+using NSubstitute;
 using Shouldly;
 using Xunit;
 
@@ -77,5 +82,64 @@ public class InputReaderTests
         items[2].IsFileId.ShouldBeFalse();
         items[2].UncPath.ShouldBe("67x");
         items[3].FileId.ShouldBe(8);
+    }
+
+    [Fact]
+    public void ReadInputs_NoCliArgument_FallsBackToInputFilePathConfig()
+    {
+        // Arrange: a real text file referenced by Input:FilePath (no --input-files supplied)
+        var tempInputFile = Path.Combine(Path.GetTempPath(), $"inputs-test-{Guid.NewGuid():N}.txt");
+        File.WriteAllLines(tempInputFile, new[] { @"\\srv\from-filepath.ac_", "42" });
+
+        try
+        {
+            var options = Microsoft.Extensions.Options.Options.Create(new ConfigurationOptions
+            {
+                Input = new InputOptions { FilePath = tempInputFile, Files = new List<string> { "ignored-when-filepath-is-set" } },
+            });
+            var sut = new InputReader(options, Substitute.For<ILogger<InputReader>>());
+
+            // Act
+            var items = sut.ReadInputs(null);
+
+            // Assert: the FilePath file wins over the inline Files array
+            items.Count.ShouldBe(2);
+            items[0].UncPath.ShouldBe(@"\\srv\from-filepath.ac_");
+            items[1].FileId.ShouldBe(42);
+        }
+        finally
+        {
+            File.Delete(tempInputFile);
+        }
+    }
+
+    [Fact]
+    public void ReadInputs_CliArgumentTakesPrecedenceOverInputFilePathConfig()
+    {
+        // Arrange: both a CLI argument and a config FilePath point at different files
+        var cliFile = Path.Combine(Path.GetTempPath(), $"cli-inputs-{Guid.NewGuid():N}.txt");
+        var configFile = Path.Combine(Path.GetTempPath(), $"config-inputs-{Guid.NewGuid():N}.txt");
+        File.WriteAllLines(cliFile, new[] { @"\\srv\from-cli.ac_" });
+        File.WriteAllLines(configFile, new[] { @"\\srv\from-config.ac_" });
+
+        try
+        {
+            var options = Microsoft.Extensions.Options.Options.Create(new ConfigurationOptions
+            {
+                Input = new InputOptions { FilePath = configFile },
+            });
+            var sut = new InputReader(options, Substitute.For<ILogger<InputReader>>());
+
+            // Act
+            var items = sut.ReadInputs(cliFile);
+
+            // Assert: the CLI argument wins
+            items.ShouldHaveSingleItem().UncPath.ShouldBe(@"\\srv\from-cli.ac_");
+        }
+        finally
+        {
+            File.Delete(cliFile);
+            File.Delete(configFile);
+        }
     }
 }

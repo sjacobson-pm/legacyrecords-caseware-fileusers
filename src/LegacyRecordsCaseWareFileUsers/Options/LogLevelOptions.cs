@@ -13,6 +13,8 @@ public class LogLevelOptions
 
     public string ApplicationInsights { get; set; } = null!;
 
+    public string File { get; set; } = null!;
+
     public string Microsoft { get; set; } = null!;
 
     public string System { get; set; } = null!;

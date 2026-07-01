@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using CaseWare;
 using LegacyRecordsCaseWareFileUsers.Exceptions;
+using LegacyRecordsCaseWareFileUsers.Helpers;
 using LegacyRecordsCaseWareFileUsers.Options;
 using LegacyRecordsCaseWareFileUsers.Services.Interfaces;
 using Microsoft.Extensions.Logging;
@@ -51,6 +52,8 @@ internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(caseWareFilePath);
 
+        var fileLabel = LogPathFormatter.FormatForLog(caseWareFilePath);
+
         try
         {
             return this.retryPipeline.Execute(() =>
@@ -60,18 +63,19 @@ internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
                 this.RunWithCaseWareClient(
                     client =>
                     {
-                        this.EnsureProtectionIsEnabled(client);
+                        this.EnsureProtectionIsEnabled(client, fileLabel);
                         var securityGroups = this.caseWareIntegrationService.GetSecurityGroups(client);
-                        users = this.GetUsersIfSecurityGroupExists(securityGroups, Constants.FileSecurityGroupName, client);
+                        users = this.GetUsersIfSecurityGroupExists(securityGroups, Constants.FileSecurityGroupName, client, fileLabel);
                     },
-                    caseWareFilePath);
+                    caseWareFilePath,
+                    fileLabel);
 
                 return users;
             });
         }
         catch (Exception ex)
         {
-            throw new CaseWareFileUserRetrievalException($"Unable to retrieve users from the CaseWare file '{caseWareFilePath}'.", ex);
+            throw new CaseWareFileUserRetrievalException($"Unable to retrieve users from the CaseWare file '{fileLabel}'.", ex);
         }
     }
 
@@ -106,7 +110,7 @@ internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
             .Build();
     }
 
-    private void RunWithCaseWareClient(Action<CWClient> code, string caseWareFilePath)
+    private void RunWithCaseWareClient(Action<CWClient> code, string caseWareFilePath, string fileLabel)
     {
         var loginUserId = this.options.CaseWare.LoginUserId;
         var loginUserPassword = this.options.CaseWare.LoginUserPassword;
@@ -115,7 +119,7 @@ internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
 
         try
         {
-            this.logger.LogInformation("Opening CaseWare file {CaseWareFilePath}...", caseWareFilePath);
+            this.logger.LogInformation("Opening CaseWare file {File}...", fileLabel);
             caseWareClient = this.caseWareIntegrationService.OpenCaseWareFile(caseWareFilePath, loginUserId, loginUserPassword);
 
             code(caseWareClient);
@@ -129,11 +133,11 @@ internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
         }
     }
 
-    private void EnsureProtectionIsEnabled(CWClient client)
+    private void EnsureProtectionIsEnabled(CWClient client, string fileLabel)
     {
         if (!this.caseWareIntegrationService.IsProtectionEnabled(client))
         {
-            this.logger.LogInformation("Protection is disabled; enabling protection...");
+            this.logger.LogInformation("Protection is disabled on {File}; enabling protection...", fileLabel);
 
             this.caseWareIntegrationService.EnableCaseWareFileProtectionSetup(
                 client,
@@ -142,16 +146,20 @@ internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
         }
     }
 
-    private ICollection<string> GetUsersIfSecurityGroupExists(ICollection<string> securityGroups, string securityGroupName, CWClient client)
+    private ICollection<string> GetUsersIfSecurityGroupExists(
+        ICollection<string> securityGroups,
+        string securityGroupName,
+        CWClient client,
+        string fileLabel)
     {
         if (!securityGroups.Contains(securityGroupName))
         {
-            this.logger.LogInformation("The {GroupName} security group does not exist on the file.", securityGroupName);
+            this.logger.LogInformation("The {GroupName} security group does not exist on {File}.", securityGroupName, fileLabel);
 
             return new List<string>();
         }
 
-        this.logger.LogInformation("Getting all users in the {GroupName} security group...", securityGroupName);
+        this.logger.LogInformation("Getting all users in the {GroupName} security group of {File}...", securityGroupName, fileLabel);
 
         return this.caseWareIntegrationService.GetAllUsersInSecurityGroup(client, securityGroupName);
     }

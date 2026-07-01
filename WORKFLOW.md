@@ -86,3 +86,10 @@ flowchart TB
 - **Missing required configuration** at start-up (`ConnectionStrings:CaseWareFileManagement`,
   `CaseWare:LoginUserId`, `CaseWare:LoginUserPassword`, etc.) fails the run before any external
   boundary is crossed, with a clear message and exit code `-1`.
+- **Database unreachable at start-up** is detected by a connectivity probe before Phase 1 begins —
+  no CaseWare reads are wasted. The failure is logged with the underlying SQL error message and a
+  hint about `TrustServerCertificate=True` for on-prem servers; exit code `-1`.
+- **A locked file blocks workspace cleanup** (a PDF that antivirus, indexer, or a viewer is holding)
+  is retried by Polly with exponential backoff. If the lock persists past the retries, a single
+  warning is logged naming the workspace and the underlying reason — no stack trace — and the run
+  continues. The leftover directory can be removed manually.
