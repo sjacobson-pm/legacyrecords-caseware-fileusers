@@ -245,8 +245,15 @@ internal class Program
                 ? parsed
                 : RollingInterval.Day;
 
+            // resolve the log-file path against the spreadsheet output folder when the configured
+            // path is just a filename — that way the log lands in the same folder as the output
+            // spreadsheet and outlives the run (unlike the workspace root, which is deleted at
+            // cleanup). Rooted or directory-prefixed paths are treated as an explicit override and
+            // are honored verbatim.
+            var resolvedPath = ResolveFileLogPath(fileOptions.Path);
+
             loggerConfiguration.WriteTo.File(
-                path: fileOptions.Path,
+                path: resolvedPath,
                 outputTemplate: outputTemplate,
                 rollingInterval: rollingInterval,
                 retainedFileCountLimit: fileOptions.RetainedFileCountLimit,
@@ -256,6 +263,60 @@ internal class Program
         {
             Console.Error.WriteLine($"File logging is disabled due to an invalid configuration: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    ///     Resolves the log-file path against the spreadsheet output folder when the configured path
+    ///     is just a filename. If the configured path is rooted (absolute) or already has a directory
+    ///     component, it is honored verbatim as an explicit user override; otherwise the log filename
+    ///     is joined with the output directory taken from <c>Output:FilePath</c>'s directory,
+    ///     <c>Output:Directory</c>, or the current working directory in that order — the same
+    ///     precedence used by the spreadsheet writer.
+    /// </summary>
+    /// <param name="configuredPath">
+    ///     The raw <c>ApplicationLogging:File:Path</c> value from configuration.
+    /// </param>
+    /// <returns>The path handed to the Serilog file sink.</returns>
+    private static string ResolveFileLogPath(string configuredPath)
+    {
+        // any user-supplied path with a directory component (relative or absolute) is honored as-is
+        if (Path.IsPathRooted(configuredPath) || !string.IsNullOrEmpty(Path.GetDirectoryName(configuredPath)))
+        {
+            return configuredPath;
+        }
+
+        // bare filename → resolve against the spreadsheet output folder
+        var outputDirectory = ResolveOutputDirectory();
+
+        return Path.Combine(outputDirectory, configuredPath);
+    }
+
+    /// <summary>
+    ///     Returns the directory where the spreadsheet output will be written, using the same
+    ///     precedence as <c>FileUserService.ResolveOutputPath</c>: <c>Output:FilePath</c>'s directory
+    ///     first, then <c>Output:Directory</c>, then the current working directory.
+    /// </summary>
+    /// <returns>An absolute-or-relative directory path; never <c>null</c> or empty.</returns>
+    private static string ResolveOutputDirectory()
+    {
+        var outputOptions = configOptions.Output;
+
+        if (!string.IsNullOrWhiteSpace(outputOptions.FilePath))
+        {
+            var directoryFromFilePath = Path.GetDirectoryName(outputOptions.FilePath);
+
+            if (!string.IsNullOrEmpty(directoryFromFilePath))
+            {
+                return directoryFromFilePath;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(outputOptions.Directory))
+        {
+            return outputOptions.Directory;
+        }
+
+        return Directory.GetCurrentDirectory();
     }
 
     /// <summary>

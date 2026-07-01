@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using CaseWare;
 using LegacyRecordsCaseWareFileUsers.Exceptions;
 using LegacyRecordsCaseWareFileUsers.Helpers;
@@ -117,9 +118,18 @@ internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
 
         CWClient? caseWareClient = null;
 
+        // stopwatch brackets the entire CaseWare session (open → work → close). Log lines emit the
+        // managed thread ID so overlapping sessions in Phase 1 are recognizable in the log stream —
+        // if CaseWare COM sessions truly run in parallel, multiple "CW-SESSION start" lines will
+        // appear before any "CW-SESSION end" line does; if they serialize, each start will be
+        // followed by its matching end before the next start.
+        var threadId = Environment.CurrentManagedThreadId;
+        var stopwatch = Stopwatch.StartNew();
+
         try
         {
-            this.logger.LogInformation("Opening CaseWare file {File}...", fileLabel);
+            this.logger.LogInformation("CW-SESSION start {File} on thread {ThreadId}", fileLabel, threadId);
+
             caseWareClient = this.caseWareIntegrationService.OpenCaseWareFile(caseWareFilePath, loginUserId, loginUserPassword);
 
             code(caseWareClient);
@@ -130,6 +140,14 @@ internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
             {
                 this.caseWareIntegrationService.CloseCaseWareFile(caseWareClient);
             }
+
+            stopwatch.Stop();
+
+            this.logger.LogInformation(
+                "CW-SESSION end {File} on thread {ThreadId} after {ElapsedMs} ms",
+                fileLabel,
+                threadId,
+                stopwatch.ElapsedMilliseconds);
         }
     }
 

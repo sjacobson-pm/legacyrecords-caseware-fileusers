@@ -46,6 +46,25 @@ public class FileUserSpreadsheetWriterTests
             cellValues.ShouldContain("Detroit");
             cellValues.ShouldContain("Senior Consultant");
             cellValues.ShouldContain(v => v.Contains("CCC"));
+
+            // Guards against style bleed across the reusable IXLStyle instances. If independent styles
+            // ever share a single mutable reference again (as they would with IXLWorkbook.Style), one
+            // of these will fail because e.g. the column-header style would inherit the file-header's
+            // gray fill or the errors-header would end up bold-and-red on rows that should be plain.
+            var fileHeaderCell = worksheet.Cell(1, 1); // "File: ..." row
+            fileHeaderCell.Style.Font.Bold.ShouldBeTrue();
+            fileHeaderCell.Style.Font.FontColor.ShouldNotBe(XLColor.Red);
+
+            var columnHeaderCell = worksheet.Cell(2, 1); // "Full Name" row
+            columnHeaderCell.Style.Font.Bold.ShouldBeTrue();
+            columnHeaderCell.Style.Font.Italic.ShouldBeFalse();
+            columnHeaderCell.Style.Font.FontColor.ShouldNotBe(XLColor.Red);
+            columnHeaderCell.Style.Fill.BackgroundColor.ShouldNotBe(XLColor.LightGray);
+
+            var dataCell = worksheet.Cell(3, 1); // "Alice Adams" — a plain data cell
+            dataCell.Style.Font.Bold.ShouldBeFalse();
+            dataCell.Style.Font.Italic.ShouldBeFalse();
+            dataCell.Style.Font.FontColor.ShouldNotBe(XLColor.Red);
         }
         finally
         {

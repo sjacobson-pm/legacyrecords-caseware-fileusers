@@ -99,7 +99,8 @@ also fails fast with a clean message and no stack trace.
 | `CaseWare`          | `LoginUserId` *(required)*            | CaseWare login used to open files.                                   |
 | `CaseWare`          | `LoginUserPassword` *(required)*      | CaseWare login password.                                             |
 | `CaseWare`          | `RetryRetrievingUsersMaximumAttempts` | Maximum attempts when reading the security group (default `3`).      |
-| `Processing`        | `MaxDegreeOfParallelism`              | Files processed concurrently; `0` (or less) uses the processor count.|
+| `Processing`        | `MaxDegreeOfParallelism`              | Files the CaseWare stage processes concurrently; `0` (or less) uses the processor count.|
+| `Processing`        | `MaxCopyDegreeOfParallelism`          | Files the copy stage prefetches from the UNC share concurrently; `0` (or less) matches `MaxDegreeOfParallelism`. Raise above the CaseWare DOP to hide UNC copy latency behind CaseWare work.|
 | `ActiveDirectory`   | `DomainName`                          | Domain queried for the support-team group.                           |
 | `ActiveDirectory`   | `CaseWareSupportTeamGroupName`        | AD group whose members are removed from the results.                 |
 | `Workspace`         | `RootPath`                            | Root for per-file workspaces (defaults to the OS temp folder).       |
@@ -107,7 +108,7 @@ also fails fast with a clean message and no stack trace.
 | `Input`             | `FilePath`                            | Path to a text file with one input per line; used when `--input-files` is not supplied. |
 | `Input`             | `Files`                               | Inline fallback inputs when neither `--input-files` nor `Input:FilePath` is supplied. |
 | `ApplicationLogging`| —                                     | Serilog output templates, log levels, Application Insights, and the rolling file sink. |
-| `ApplicationLogging:File` | `Path`                          | Rolling log file path; the rolling-interval suffix is appended. When blank, the file sink is not added. |
+| `ApplicationLogging:File` | `Path`                          | Rolling log file path; the rolling-interval suffix is appended. When a bare filename (default: `LegacyRecordsCaseWareFileUsers-.log`), the log is written to the spreadsheet output folder (`Output:FilePath` directory, then `Output:Directory`, then the current working directory). A rooted or directory-prefixed path is honored verbatim. Set to blank to disable the file sink. |
 | `ApplicationLogging:File` | `RollingInterval`               | One of `Infinite`, `Year`, `Month`, `Day`, `Hour`, `Minute` (default `Day`). |
 | `ApplicationLogging:File` | `RetainedFileCountLimit`        | Maximum number of rolled files to keep on disk (default `31`).       |
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using LegacyRecordsCaseWareFileUsers.Data.Domain;
 using LegacyRecordsCaseWareFileUsers.Data.Repositories;
@@ -177,44 +178,148 @@ internal class FileUserService : IFileUserService
 
     private async Task ReadCaseWareIdentifiersAsync(IReadOnlyList<FileWorkItem> workItems, CancellationToken cancellationToken)
     {
+        // items whose Phase 0 file-ID lookup failed have no UNC path; those items already have their
+        // errors recorded and there is nothing for Phase 1 to do with them — filter them out here
+        // rather than let each pipeline stage skip them
+        var itemsToProcess = workItems.Where(item => item.UncPath != null).ToList();
+
+        if (itemsToProcess.Count == 0)
+        {
+            return;
+        }
+
+        var caseWareDop = this.GetMaxDegreeOfParallelism();
+        var copyDop = this.GetCopyMaxDegreeOfParallelism();
+
+        // The channel is the seam between the copy stage (producer) and the CaseWare stage (consumer).
+        // Bounded capacity applies backpressure so the copy stage cannot run arbitrarily far ahead of
+        // the (slower) CaseWare stage and pile up on local disk. A small multiple of the CaseWare DOP
+        // keeps every CaseWare worker fed with at most one queued file and one in-flight file — enough
+        // to hide the copy latency behind CaseWare work without unbounded prefetch.
+        var channelCapacity = Math.Max(caseWareDop * 2, 1);
+
+        var channel = Channel.CreateBounded<StagedFile>(new BoundedChannelOptions(channelCapacity)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = false,
+            SingleWriter = false,
+        });
+
+        this.logger.LogInformation(
+            "Phase 1 pipeline: copy DOP {CopyDop}, CaseWare DOP {CaseWareDop}, channel capacity {Capacity}, {ItemCount} file(s) to process.",
+            copyDop,
+            caseWareDop,
+            channelCapacity,
+            itemsToProcess.Count);
+
+        // start the consumer first so the channel drains as producers push. WriteAsync applies
+        // backpressure automatically when the channel is full, so starting the producer next is safe.
+        var consumerTask = this.ConsumeStagedFilesAsync(channel.Reader, caseWareDop, cancellationToken);
+
+        try
+        {
+            await this.ProduceStagedFilesAsync(itemsToProcess, channel.Writer, copyDop, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            // signal the consumer to drain and exit — must happen even if the producer threw or was
+            // cancelled, otherwise the consumer would wait forever on an empty channel
+            channel.Writer.TryComplete();
+        }
+
+        await consumerTask.ConfigureAwait(false);
+    }
+
+    private async Task ProduceStagedFilesAsync(
+        IReadOnlyList<FileWorkItem> itemsToProcess,
+        ChannelWriter<StagedFile> writer,
+        int copyDop,
+        CancellationToken cancellationToken)
+    {
         var parallelOptions = new ParallelOptions
         {
-            MaxDegreeOfParallelism = this.GetMaxDegreeOfParallelism(),
+            MaxDegreeOfParallelism = copyDop,
             CancellationToken = cancellationToken,
         };
 
         await Parallel.ForEachAsync(
-            workItems,
+            itemsToProcess,
             parallelOptions,
-            (workItem, token) =>
+            async (workItem, token) => await this.StageFileAsync(workItem, writer, token).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    private async Task StageFileAsync(FileWorkItem workItem, ChannelWriter<StagedFile> writer, CancellationToken cancellationToken)
+    {
+        string? workspaceDirectory = null;
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            workspaceDirectory = this.workspaceManager.CreateWorkspace();
+            var localFilePath = this.workspaceManager.CopyFileToWorkspace(workItem.UncPath!, workspaceDirectory);
+
+            // hand ownership of the workspace to the consumer via the channel; from here on the
+            // CaseWare stage is responsible for deleting it after processing
+            await writer.WriteAsync(new StagedFile(workItem, workspaceDirectory, localFilePath), cancellationToken).ConfigureAwait(false);
+
+            // ownership transferred — do not delete in the finally below
+            workspaceDirectory = null;
+        }
+        catch (OperationCanceledException)
+        {
+            // on cancellation the workspace is still ours to clean up; rethrow so the parallel loop
+            // observes the cancellation
+            if (workspaceDirectory != null)
+            {
+                this.workspaceManager.DeleteWorkspace(workspaceDirectory);
+            }
+
+            throw;
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogError(ex, "An error occurred copying file {File} to the workspace.", workItem.LogName);
+            workItem.Errors.Add($"Error copying file: {ex.Message}");
+
+            if (workspaceDirectory != null)
+            {
+                this.workspaceManager.DeleteWorkspace(workspaceDirectory);
+            }
+        }
+    }
+
+    private async Task ConsumeStagedFilesAsync(ChannelReader<StagedFile> reader, int caseWareDop, CancellationToken cancellationToken)
+    {
+        var parallelOptions = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = caseWareDop,
+            CancellationToken = cancellationToken,
+        };
+
+        await Parallel.ForEachAsync(
+            reader.ReadAllAsync(cancellationToken),
+            parallelOptions,
+            (stagedFile, token) =>
             {
                 token.ThrowIfCancellationRequested();
-                this.ReadCaseWareIdentifiers(workItem);
+                this.ProcessStagedFile(stagedFile);
 
                 return ValueTask.CompletedTask;
             }).ConfigureAwait(false);
     }
 
-    private void ReadCaseWareIdentifiers(FileWorkItem workItem)
+    private void ProcessStagedFile(StagedFile stagedFile)
     {
-        if (workItem.UncPath == null)
-        {
-            // the file-ID lookup already failed for this item; nothing to read from CaseWare
-            return;
-        }
+        var workItem = stagedFile.WorkItem;
 
         // each file runs in its own scope so its CaseWare session is isolated from other workers
         using var scope = this.serviceScopeFactory.CreateScope();
         var retriever = scope.ServiceProvider.GetRequiredService<ICaseWareFileUserRetriever>();
 
-        string? workspaceDirectory = null;
-
         try
         {
-            workspaceDirectory = this.workspaceManager.CreateWorkspace();
-            var localFilePath = this.workspaceManager.CopyFileToWorkspace(workItem.UncPath, workspaceDirectory);
-
-            var userIdentifiers = retriever.GetFileSecurityGroupUserIdentifiers(localFilePath);
+            var userIdentifiers = retriever.GetFileSecurityGroupUserIdentifiers(stagedFile.LocalFilePath);
 
             workItem.UserIdentifiers = userIdentifiers.ToList();
 
@@ -233,10 +338,7 @@ internal class FileUserService : IFileUserService
         }
         finally
         {
-            if (workspaceDirectory != null)
-            {
-                this.workspaceManager.DeleteWorkspace(workspaceDirectory);
-            }
+            this.workspaceManager.DeleteWorkspace(stagedFile.WorkspaceDirectory);
         }
     }
 
@@ -321,6 +423,15 @@ internal class FileUserService : IFileUserService
         return configured > 0 ? configured : Environment.ProcessorCount;
     }
 
+    private int GetCopyMaxDegreeOfParallelism()
+    {
+        var configured = this.options.Processing.MaxCopyDegreeOfParallelism;
+
+        // zero or less falls through to the CaseWare DOP so the copy stage matches the CaseWare stage
+        // out of the box; setting it higher lets the copy stage prefetch ahead of the CaseWare stage
+        return configured > 0 ? configured : this.GetMaxDegreeOfParallelism();
+    }
+
     private string ResolveOutputPath(string? outputPath)
     {
         if (!string.IsNullOrWhiteSpace(outputPath))
@@ -339,6 +450,11 @@ internal class FileUserService : IFileUserService
 
         return Path.Combine(directory, fileName);
     }
+
+    // A work item that has completed the copy stage of Phase 1 and is ready for the CaseWare stage.
+    // The copy stage transfers ownership of the workspace directory to the consumer via this
+    // record; the CaseWare stage is responsible for calling DeleteWorkspace after processing.
+    private sealed record StagedFile(FileWorkItem WorkItem, string WorkspaceDirectory, string LocalFilePath);
 
     // the per-input state that flows through the three phases:
     //   Input             - the original parsed input
