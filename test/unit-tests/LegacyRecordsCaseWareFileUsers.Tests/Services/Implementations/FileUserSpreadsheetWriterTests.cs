@@ -18,7 +18,7 @@ public class FileUserSpreadsheetWriterTests
     {
         // Arrange
         var result = new FileUserResult(@"\\srv\a.ac_", null, @"\\srv\a.ac_");
-        result.Users.Add(new ReportedUser("Alice Adams", "Detroit"));
+        result.Users.Add(new ReportedUser("Alice Adams", "Detroit", "Senior Consultant"));
         result.AddError("CaseWare user 'CCC' could not be mapped to a staff record.");
 
         var logger = Substitute.For<ILogger<FileUserSpreadsheetWriter>>();
@@ -41,8 +41,10 @@ public class FileUserSpreadsheetWriterTests
             cellValues.ShouldContain(@"File: \\srv\a.ac_");
             cellValues.ShouldContain("Full Name");
             cellValues.ShouldContain("Office");
+            cellValues.ShouldContain("Position");
             cellValues.ShouldContain("Alice Adams");
             cellValues.ShouldContain("Detroit");
+            cellValues.ShouldContain("Senior Consultant");
             cellValues.ShouldContain(v => v.Contains("CCC"));
         }
         finally

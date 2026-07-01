@@ -24,7 +24,8 @@ Working Papers) are touched the minimum number of times regardless of batch size
 4. **Map and emit.** Identifiers are mapped to staff in memory, the configured Active Directory
    support-team membership is loaded **once** (the result is cached for the whole run), and support
    users are removed from each file's list. A single spreadsheet is then written, grouped by file,
-   listing each retained user's **full name** and **office**, along with any errors encountered.
+   listing each retained user's **full name**, **office**, and **position**, along with any errors
+   encountered.
 
 The spreadsheet preserves input order even when Phase 2 is parallel. Processing is resilient: if a
 file fails, its error is recorded and the remaining files still run; if an individual user cannot be

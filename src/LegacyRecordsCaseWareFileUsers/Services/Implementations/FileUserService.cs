@@ -308,7 +308,7 @@ internal class FileUserService : IFileUserService
 
         foreach (var staff in reportableStaff.OrderBy(o => o.FullName))
         {
-            result.Users.Add(new ReportedUser(staff.FullName, staff.Office));
+            result.Users.Add(new ReportedUser(staff.FullName, staff.Office, staff.Position));
         }
 
         return result;

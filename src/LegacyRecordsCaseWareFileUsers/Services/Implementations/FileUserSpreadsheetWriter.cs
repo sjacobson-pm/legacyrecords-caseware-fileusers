@@ -55,7 +55,7 @@ internal class FileUserSpreadsheetWriter : IFileUserSpreadsheetWriter
             row++;
         }
 
-        worksheet.Columns(1, 2).AdjustToContents();
+        worksheet.Columns(1, 3).AdjustToContents();
 
         workbook.SaveAs(outputFilePath);
 
@@ -68,7 +68,7 @@ internal class FileUserSpreadsheetWriter : IFileUserSpreadsheetWriter
         headerCell.Value = $"File: {result.DisplayName}";
         headerCell.Style.Font.Bold = true;
         headerCell.Style.Fill.BackgroundColor = XLColor.LightGray;
-        worksheet.Range(row, 1, row, 2).Merge();
+        worksheet.Range(row, 1, row, 3).Merge();
         row++;
 
         var fullNameHeader = worksheet.Cell(row, 1);
@@ -78,6 +78,10 @@ internal class FileUserSpreadsheetWriter : IFileUserSpreadsheetWriter
         var officeHeader = worksheet.Cell(row, 2);
         officeHeader.Value = "Office";
         officeHeader.Style.Font.Bold = true;
+
+        var positionHeader = worksheet.Cell(row, 3);
+        positionHeader.Value = "Position";
+        positionHeader.Style.Font.Bold = true;
         row++;
 
         if (result.Users.Count == 0)
@@ -93,6 +97,7 @@ internal class FileUserSpreadsheetWriter : IFileUserSpreadsheetWriter
             {
                 worksheet.Cell(row, 1).Value = user.FullName;
                 worksheet.Cell(row, 2).Value = user.Office;
+                worksheet.Cell(row, 3).Value = user.Position;
                 row++;
             }
         }
@@ -110,7 +115,7 @@ internal class FileUserSpreadsheetWriter : IFileUserSpreadsheetWriter
                 var errorCell = worksheet.Cell(row, 1);
                 errorCell.Value = error;
                 errorCell.Style.Font.FontColor = XLColor.Red;
-                worksheet.Range(row, 1, row, 2).Merge();
+                worksheet.Range(row, 1, row, 3).Merge();
                 row++;
             }
         }

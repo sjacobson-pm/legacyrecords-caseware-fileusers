@@ -67,8 +67,8 @@ public class FileUserServiceTests
 
         this.retriever.GetFileSecurityGroupUserIdentifiers(@"\\srv\a.ac_").Returns(new List<string> { "AAA", "BBB", "CCC" });
 
-        var alice = MakeStaff("AAA", "Alice Adams", "Detroit");
-        var bob = MakeStaff("BBB", "Bob Brown", "Chicago");
+        var alice = MakeStaff("AAA", "Alice Adams", "Detroit", "Senior Consultant");
+        var bob = MakeStaff("BBB", "Bob Brown", "Chicago", "Partner");
 
         // the bounded staff query returns only the identifiers that were seen
         this.staffRepository.GetStaffByIdentifiersAsync(Arg.Any<IReadOnlyCollection<string>>(), Arg.Any<CancellationToken>())
@@ -87,6 +87,7 @@ public class FileUserServiceTests
         result.Users.ShouldHaveSingleItem();
         result.Users[0].FullName.ShouldBe("Alice Adams");
         result.Users[0].Office.ShouldBe("Detroit");
+        result.Users[0].Position.ShouldBe("Senior Consultant");
         result.Errors.ShouldContain(e => e.Contains("CCC"));
     }
 
@@ -270,7 +271,7 @@ public class FileUserServiceTests
         while (Interlocked.CompareExchange(ref target, value, snapshot) != snapshot);
     }
 
-    private static Staff MakeStaff(string identifier, string fullName, string office)
+    private static Staff MakeStaff(string identifier, string fullName, string office, string position = "Staff")
     {
         return new Staff
         {
@@ -279,7 +280,7 @@ public class FileUserServiceTests
             Office = office,
             UserPrincipalName = $"{fullName}@plantemoran.com",
             EmailAddress = $"{fullName}@plantemoran.com",
-            Position = "Staff",
+            Position = position,
             SamAccountName = fullName.Replace(" ", string.Empty),
         };
     }
