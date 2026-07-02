@@ -2,6 +2,7 @@
 using System.IO;
 using LegacyRecordsCaseWareFileUsers.Options;
 using LegacyRecordsCaseWareFileUsers.Services.Implementations;
+using LegacyRecordsCaseWareFileUsers.Services.Interfaces;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Shouldly;
@@ -151,8 +152,10 @@ public class WorkspaceManagerTests
     {
         var options = Microsoft.Extensions.Options.Options.Create(
             new ConfigurationOptions { Workspace = new WorkspaceOptions { RootPath = root } });
+        var runContext = Substitute.For<IRunContext>();
+        runContext.RunId.Returns("test-run-swift-otter-runs");
         var logger = Substitute.For<ILogger<WorkspaceManager>>();
 
-        return new WorkspaceManager(options, logger);
+        return new WorkspaceManager(options, runContext, logger);
     }
 }

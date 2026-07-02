@@ -7,4 +7,6 @@ public static class LogContextProperties
     public const string ExecutionMode = "ExecutionMode";
 
     public const string MachineName = "MachineName";
+
+    public const string RunId = "RunId";
 }

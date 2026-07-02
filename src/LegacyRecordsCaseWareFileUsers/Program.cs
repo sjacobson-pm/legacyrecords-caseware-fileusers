@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using CommandLine;
 using LegacyRecordsCaseWareFileUsers.CommandLineOptions;
 using LegacyRecordsCaseWareFileUsers.Data.Contexts;
+using LegacyRecordsCaseWareFileUsers.Helpers;
 using LegacyRecordsCaseWareFileUsers.Helpers.Extensions;
 using LegacyRecordsCaseWareFileUsers.Logging;
 using LegacyRecordsCaseWareFileUsers.Options;
@@ -40,6 +41,8 @@ internal class Program
     private static IConfigurationRoot configuration = null!;
     private static ConfigurationOptions configOptions = null!;
     private static ILogger log = null!;
+    private static string runId = null!;
+    private static string effectiveOutputDirectory = null!;
     private static int exitCode;
 
     private static async Task Main(string[] args)
@@ -49,15 +52,31 @@ internal class Program
         try
         {
             BindConfigurationOptions();
+
+            // Parse command-line arguments early — before logging is configured — so the effective
+            // output directory (which may come from `--output`) is known when the file-log sink is
+            // set up and when the RunID's collision check runs. The parser prints its own errors
+            // and help text to Console.Error, so nothing is lost by not having Serilog yet.
+            var parseResult = Parser.Default.ParseArguments<ProduceFileUserListOptions>(args);
+            var parsedOptions = (parseResult as Parsed<ProduceFileUserListOptions>)?.Value;
+
+            effectiveOutputDirectory = ResolveOutputDirectory(parsedOptions?.OutputPath);
+            runId = RunIdGenerator.GenerateUnique(effectiveOutputDirectory);
+
             ConfigureServices();
             ConfigureLogging();
 
-            log.Information("Starting {ApplicationTitle} with arguments {Arguments}", Constants.ApplicationTitle, JsonConvert.SerializeObject(args));
+            // The first line every log stream sees identifies the run — critical when troubleshooting
+            // hours-long batches or resuming a crashed run against its journal.
+            log.Information(
+                "Starting {ApplicationTitle} — Run ID: {RunId} — arguments: {Arguments}",
+                Constants.ApplicationTitle,
+                runId,
+                JsonConvert.SerializeObject(args));
 
-            await Parser.Default.ParseArguments<ProduceFileUserListOptions>(args)
-                        .MapResult(
-                             async options => await ProduceFileUserListAsync(options),
-                             async errors => await HandleCommandLineParsingErrorsAsync(args, errors));
+            await parseResult.MapResult(
+                async options => await ProduceFileUserListAsync(options),
+                async errors => await HandleCommandLineParsingErrorsAsync(args, errors));
         }
         catch (OperationCanceledException)
         {
@@ -187,7 +206,7 @@ internal class Program
                 .ValidateOnStart();
 
         // services
-        services.AddConsoleAppServices(configOptions);
+        services.AddConsoleAppServices(configOptions, runId);
     }
 
     /// <summary>
@@ -204,6 +223,7 @@ internal class Program
                            .Enrich.WithProcessId()
                            .Enrich.WithMachineName()
                            .Enrich.WithProperty(LogContextProperties.EngineInstance, EngineInstanceId)
+                           .Enrich.WithProperty(LogContextProperties.RunId, runId)
                            .WriteTo.Debug(
                                 outputTemplate: configOptions.Logging.DebugOutputTemplate,
                                 levelSwitch: LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.Debug))
@@ -228,11 +248,6 @@ internal class Program
     {
         var fileOptions = configOptions.Logging.File;
 
-        if (string.IsNullOrWhiteSpace(fileOptions.Path))
-        {
-            return;
-        }
-
         try
         {
             // fall back to the console template when none is configured for the file sink
@@ -240,17 +255,26 @@ internal class Program
                 ? configOptions.Logging.ConsoleOutputTemplate
                 : fileOptions.OutputTemplate;
 
-            // default to a daily rolling interval when the configured value is blank or invalid
-            var rollingInterval = Enum.TryParse<RollingInterval>(fileOptions.RollingInterval, ignoreCase: true, out var parsed)
-                ? parsed
-                : RollingInterval.Day;
+            RollingInterval rollingInterval;
+            string resolvedPath;
 
-            // resolve the log-file path against the spreadsheet output folder when the configured
-            // path is just a filename — that way the log lands in the same folder as the output
-            // spreadsheet and outlives the run (unlike the workspace root, which is deleted at
-            // cleanup). Rooted or directory-prefixed paths are treated as an explicit override and
-            // are honored verbatim.
-            var resolvedPath = ResolveFileLogPath(fileOptions.Path);
+            if (string.IsNullOrWhiteSpace(fileOptions.Path))
+            {
+                // no explicit config → default to a one-file-per-run log named after the RunID,
+                // co-located with the spreadsheet output. Rolling is unnecessary because each run
+                // already has a unique filename.
+                resolvedPath = Path.Combine(effectiveOutputDirectory, $"FileUsers-{runId}.log");
+                rollingInterval = RollingInterval.Infinite;
+            }
+            else
+            {
+                // explicit config → honor it. Bare filenames land in the output directory; rooted
+                // or directory-prefixed paths are honored verbatim (see ResolveFileLogPath).
+                resolvedPath = ResolveFileLogPath(fileOptions.Path);
+                rollingInterval = Enum.TryParse<RollingInterval>(fileOptions.RollingInterval, ignoreCase: true, out var parsed)
+                    ? parsed
+                    : RollingInterval.Day;
+            }
 
             loggerConfiguration.WriteTo.File(
                 path: resolvedPath,
@@ -266,12 +290,10 @@ internal class Program
     }
 
     /// <summary>
-    ///     Resolves the log-file path against the spreadsheet output folder when the configured path
-    ///     is just a filename. If the configured path is rooted (absolute) or already has a directory
-    ///     component, it is honored verbatim as an explicit user override; otherwise the log filename
-    ///     is joined with the output directory taken from <c>Output:FilePath</c>'s directory,
-    ///     <c>Output:Directory</c>, or the current working directory in that order — the same
-    ///     precedence used by the spreadsheet writer.
+    ///     Resolves an explicitly-configured log-file path against the spreadsheet output folder
+    ///     when the configured path is just a filename. If the configured path is rooted (absolute)
+    ///     or already has a directory component, it is honored verbatim as an explicit user override;
+    ///     otherwise the log filename is joined with the effective output directory.
     /// </summary>
     /// <param name="configuredPath">
     ///     The raw <c>ApplicationLogging:File:Path</c> value from configuration.
@@ -285,20 +307,31 @@ internal class Program
             return configuredPath;
         }
 
-        // bare filename → resolve against the spreadsheet output folder
-        var outputDirectory = ResolveOutputDirectory();
-
-        return Path.Combine(outputDirectory, configuredPath);
+        // bare filename → resolve against the effective spreadsheet output folder
+        return Path.Combine(effectiveOutputDirectory, configuredPath);
     }
 
     /// <summary>
-    ///     Returns the directory where the spreadsheet output will be written, using the same
-    ///     precedence as <c>FileUserService.ResolveOutputPath</c>: <c>Output:FilePath</c>'s directory
-    ///     first, then <c>Output:Directory</c>, then the current working directory.
+    ///     Returns the directory where the spreadsheet output will be written for this run, using
+    ///     precedence: the CLI-provided output path's directory (if any), then <c>Output:FilePath</c>'s
+    ///     directory, then <c>Output:Directory</c>, then the current working directory. Called once
+    ///     early in <see cref="Main" /> so every derived artifact path (log file, RunID collision
+    ///     check, default spreadsheet location) agrees on where the run's artifacts live.
     /// </summary>
+    /// <param name="commandLineOutputPath">The value of <c>--output</c>, if provided.</param>
     /// <returns>An absolute-or-relative directory path; never <c>null</c> or empty.</returns>
-    private static string ResolveOutputDirectory()
+    private static string ResolveOutputDirectory(string? commandLineOutputPath)
     {
+        if (!string.IsNullOrWhiteSpace(commandLineOutputPath))
+        {
+            var directoryFromCli = Path.GetDirectoryName(commandLineOutputPath);
+
+            if (!string.IsNullOrEmpty(directoryFromCli))
+            {
+                return directoryFromCli;
+            }
+        }
+
         var outputOptions = configOptions.Output;
 
         if (!string.IsNullOrWhiteSpace(outputOptions.FilePath))

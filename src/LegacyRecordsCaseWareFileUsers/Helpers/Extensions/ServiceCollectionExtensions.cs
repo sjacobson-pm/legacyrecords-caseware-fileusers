@@ -22,9 +22,16 @@ public static class ServiceCollectionExtensions
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="configOptions">The bound configuration options.</param>
+    /// <param name="runId">
+    ///     The run identifier chosen at startup by <see cref="Helpers.RunIdGenerator" />. Registered
+    ///     as an <see cref="IRunContext" /> singleton so every collaborator observes the same value.
+    /// </param>
     /// <returns>The same service collection, to allow chaining.</returns>
-    public static IServiceCollection AddConsoleAppServices(this IServiceCollection services, ConfigurationOptions configOptions)
+    public static IServiceCollection AddConsoleAppServices(this IServiceCollection services, ConfigurationOptions configOptions, string runId)
     {
+        // run context (shared by every collaborator that needs the RunID)
+        services.AddSingleton<IRunContext>(new RunContext(runId));
+
         // database context (the shared CaseWare File Management database)
         services.AddDbContext<CaseWareFileManagementDbContext>(o => o.UseSqlServer(configOptions.ConnectionStrings.CaseWareFileManagement));
 

@@ -27,6 +27,7 @@ public class FileUserServiceTests
     private readonly IWorkspaceManager workspaceManager = Substitute.For<IWorkspaceManager>();
     private readonly IFileUserSpreadsheetWriter spreadsheetWriter = Substitute.For<IFileUserSpreadsheetWriter>();
     private readonly IServiceScopeFactory serviceScopeFactory = Substitute.For<IServiceScopeFactory>();
+    private readonly IRunContext runContext = Substitute.For<IRunContext>();
 
     private IReadOnlyList<FileUserResult>? capturedResults;
 
@@ -57,6 +58,8 @@ public class FileUserServiceTests
 
         this.spreadsheetWriter.When(w => w.Write(Arg.Any<IReadOnlyList<FileUserResult>>(), Arg.Any<string>()))
             .Do(ci => this.capturedResults = ci.ArgAt<IReadOnlyList<FileUserResult>>(0));
+
+        this.runContext.RunId.Returns("test-swift-otter-runs");
     }
 
     [Fact]
@@ -305,6 +308,7 @@ public class FileUserServiceTests
             this.workspaceManager,
             this.spreadsheetWriter,
             this.serviceScopeFactory,
-            this.supportUserFilter);
+            this.supportUserFilter,
+            this.runContext);
     }
 }

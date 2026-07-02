@@ -12,15 +12,19 @@ namespace LegacyRecordsCaseWareFileUsers.Services.Implementations;
 
 /// <summary>
 ///     Creates and tears down the local workspace root and the isolated per-file workspaces beneath
-///     it. Cleanup operations are wrapped in a Polly retry pipeline because external processes
-///     (antivirus scanners, file indexers, PDF viewers, etc.) commonly hold transient locks on files
-///     just produced by CaseWare. A persistent failure is logged as a clean warning naming the
-///     workspace and the underlying reason — never as a stack trace — so processing is not held up.
+///     it. The workspace root's directory name is the current run's RunID (for example,
+///     <c>%TEMP%\swift-otter-runs</c>), so orphaned workspaces from crashed runs can be traced back
+///     to their run via the run's log file and journal.
+///     <para>
+///         Cleanup operations are wrapped in a Polly retry pipeline because external processes
+///         (antivirus scanners, file indexers, PDF viewers, etc.) commonly hold transient locks on
+///         files just produced by CaseWare. A persistent failure is logged as a clean warning naming
+///         the workspace and the underlying reason — never as a stack trace — so processing is not
+///         held up.
+///     </para>
 /// </summary>
 internal class WorkspaceManager : IWorkspaceManager
 {
-    private const string WorkspaceFolderPrefix = "lr-caseware-fileusers";
-
     private static readonly ResiliencePipeline DirectoryDeletionPipeline = BuildDirectoryDeletionPipeline();
 
     private readonly string workspaceRoot;
@@ -30,16 +34,18 @@ internal class WorkspaceManager : IWorkspaceManager
     ///     Initializes a new instance of the <see cref="WorkspaceManager" /> class.
     /// </summary>
     /// <param name="optionsAccessor">The configuration options accessor.</param>
+    /// <param name="runContext">The current run's context (supplies the RunID used as the workspace subdirectory).</param>
     /// <param name="logger">The logger.</param>
-    public WorkspaceManager(IOptions<ConfigurationOptions> optionsAccessor, ILogger<WorkspaceManager> logger)
+    public WorkspaceManager(IOptions<ConfigurationOptions> optionsAccessor, IRunContext runContext, ILogger<WorkspaceManager> logger)
     {
         ArgumentNullException.ThrowIfNull(optionsAccessor);
+        ArgumentNullException.ThrowIfNull(runContext);
         ArgumentNullException.ThrowIfNull(logger);
 
         var configuredRoot = optionsAccessor.Value.Workspace.RootPath;
         var root = string.IsNullOrWhiteSpace(configuredRoot) ? Path.GetTempPath() : configuredRoot;
 
-        this.workspaceRoot = Path.Combine(root, WorkspaceFolderPrefix);
+        this.workspaceRoot = Path.Combine(root, runContext.RunId);
         this.logger = logger;
     }
 

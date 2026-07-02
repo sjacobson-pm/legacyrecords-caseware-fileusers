@@ -42,6 +42,7 @@ internal class FileUserService : IFileUserService
     private readonly IFileUserSpreadsheetWriter spreadsheetWriter;
     private readonly IServiceScopeFactory serviceScopeFactory;
     private readonly ISupportUserFilter supportUserFilter;
+    private readonly IRunContext runContext;
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="FileUserService" /> class.
@@ -55,6 +56,8 @@ internal class FileUserService : IFileUserService
     /// parallel worker gets its own CaseWare session.</param>
     /// <param name="supportUserFilter">The support-user filter (singleton; caches the AD lookup for
     /// the lifetime of the run).</param>
+    /// <param name="runContext">The current run's context (supplies the RunID used to name the
+    /// default output file when neither <c>--output</c> nor <c>Output:FilePath</c> is set).</param>
     public FileUserService(
         IOptions<ConfigurationOptions> optionsAccessor,
         ILogger<FileUserService> logger,
@@ -62,7 +65,8 @@ internal class FileUserService : IFileUserService
         IWorkspaceManager workspaceManager,
         IFileUserSpreadsheetWriter spreadsheetWriter,
         IServiceScopeFactory serviceScopeFactory,
-        ISupportUserFilter supportUserFilter)
+        ISupportUserFilter supportUserFilter,
+        IRunContext runContext)
     {
         ArgumentNullException.ThrowIfNull(optionsAccessor);
         ArgumentNullException.ThrowIfNull(logger);
@@ -71,6 +75,7 @@ internal class FileUserService : IFileUserService
         ArgumentNullException.ThrowIfNull(spreadsheetWriter);
         ArgumentNullException.ThrowIfNull(serviceScopeFactory);
         ArgumentNullException.ThrowIfNull(supportUserFilter);
+        ArgumentNullException.ThrowIfNull(runContext);
 
         this.options = optionsAccessor.Value;
         this.logger = logger;
@@ -79,6 +84,7 @@ internal class FileUserService : IFileUserService
         this.spreadsheetWriter = spreadsheetWriter;
         this.serviceScopeFactory = serviceScopeFactory;
         this.supportUserFilter = supportUserFilter;
+        this.runContext = runContext;
     }
 
     /// <inheritdoc />
@@ -446,7 +452,10 @@ internal class FileUserService : IFileUserService
 
         var directory = string.IsNullOrWhiteSpace(this.options.Output.Directory) ? Directory.GetCurrentDirectory() : this.options.Output.Directory;
 
-        var fileName = $"FileUsers_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
+        // Default output filename derives from the RunID so every artifact of a single run (log,
+        // journal, spreadsheet) shares the same stem. Callers who want a semantic filename can
+        // still override via `--output` or `Output:FilePath`.
+        var fileName = $"FileUsers-{this.runContext.RunId}.xlsx";
 
         return Path.Combine(directory, fileName);
     }
