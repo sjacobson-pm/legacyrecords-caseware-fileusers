@@ -61,7 +61,16 @@ internal class Program
             var parsedOptions = (parseResult as Parsed<ProduceFileUserListOptions>)?.Value;
 
             effectiveOutputDirectory = ResolveOutputDirectory(parsedOptions?.OutputPath);
-            runId = RunIdGenerator.GenerateUnique(effectiveOutputDirectory);
+
+            // Adopt the RunID from --resume when provided, otherwise generate a fresh one. The
+            // resume target's existence is validated below, after logging is configured, so any
+            // failure surfaces through the normal logged pathway (console color, log file, and the
+            // "Press any key to exit" prompt) instead of a bare stderr dump that vanishes with
+            // Environment.Exit.
+            var isResuming = !string.IsNullOrWhiteSpace(parsedOptions?.ResumeRunId);
+            runId = isResuming
+                ? parsedOptions!.ResumeRunId!.Trim()
+                : RunIdGenerator.GenerateUnique(effectiveOutputDirectory);
 
             ConfigureServices();
             ConfigureLogging();
@@ -73,6 +82,13 @@ internal class Program
                 Constants.ApplicationTitle,
                 runId,
                 JsonConvert.SerializeObject(args));
+
+            if (isResuming && !ValidateResumeJournal(runId, effectiveOutputDirectory))
+            {
+                // ValidateResumeJournal already logged the clean failure message and set exitCode.
+                // Skip the work by not entering MapResult; the exit sequence below runs normally.
+                return;
+            }
 
             await parseResult.MapResult(
                 async options => await ProduceFileUserListAsync(options),
@@ -124,6 +140,51 @@ internal class Program
         await Log.CloseAndFlushAsync();
 
         Environment.Exit(exitCode);
+    }
+
+    /// <summary>
+    ///     Verifies that a journal file matching the supplied RunID is present and not already
+    ///     marked completed. Called after logging is configured so the fail path can log via
+    ///     <c>log.Fatal</c> — the message reaches the console (with color), the run's log file, and
+    ///     Application Insights if configured. Sets <see cref="exitCode" /> and returns
+    ///     <c>false</c> on failure so the caller can skip subsequent work while still running the
+    ///     normal exit sequence (banner, log flush, keypress prompt).
+    /// </summary>
+    /// <param name="resumeRunId">The RunID supplied to <c>--resume</c>.</param>
+    /// <param name="outputDirectory">The effective output directory to look in.</param>
+    /// <returns><c>true</c> if resume can proceed; <c>false</c> if it must be aborted.</returns>
+    private static bool ValidateResumeJournal(string resumeRunId, string outputDirectory)
+    {
+        var journalPath = Path.Combine(outputDirectory, $"FileUsers-{resumeRunId}.journal.jsonl");
+        var completedJournalPath = Path.Combine(outputDirectory, $"FileUsers-{resumeRunId}.journal.completed.jsonl");
+
+        if (File.Exists(completedJournalPath))
+        {
+            log.Fatal(
+                "Resume was requested for Run ID '{RunId}' but the journal at '{CompletedJournalPath}' is already marked completed. " +
+                "Rename it back to '.journal.jsonl' by hand if you truly want to resume against a completed journal, or omit --resume to start a fresh run.",
+                resumeRunId,
+                completedJournalPath);
+
+            exitCode = -1;
+
+            return false;
+        }
+
+        if (!File.Exists(journalPath))
+        {
+            log.Fatal(
+                "Resume was requested for Run ID '{RunId}' but no journal was found at '{JournalPath}'. " +
+                "Omit --resume to start a fresh run.",
+                resumeRunId,
+                journalPath);
+
+            exitCode = -1;
+
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -217,7 +278,7 @@ internal class Program
                 .ValidateOnStart();
 
         // services
-        services.AddConsoleAppServices(configOptions, runId);
+        services.AddConsoleAppServices(configOptions, runId, effectiveOutputDirectory);
     }
 
     /// <summary>
@@ -413,12 +474,35 @@ internal class Program
         using var property = LogContext.PushProperty(LogContextProperties.ExecutionMode, Constants.ExecutionModes.ProduceFileUserList);
         using var cancellationTokenSource = new CancellationTokenSource();
 
+        // In-flight CaseWare COM calls cannot be interrupted mid-flight, so the pipeline can only
+        // wind down once each worker's current file finishes or throws. Log an immediate warning
+        // in the Ctrl+C handler itself so the user knows their keypress was received while the
+        // wind-down is in progress. The Warning level also triggers the blank-line separator, so
+        // it stands out in the log. A second Ctrl+C is allowed to fall through to the default
+        // termination behavior — an escape hatch if the graceful shutdown itself hangs.
+        var cancellationAcknowledged = 0;
         void CancelKeyPressHandler(object? sender, ConsoleCancelEventArgs eventArgs)
         {
-            eventArgs.Cancel = true;
+            var pressCount = Interlocked.Increment(ref cancellationAcknowledged);
 
-            // ReSharper disable once AccessToDisposedClosure -- the handler is unsubscribed in the finally below before the token source is disposed
-            cancellationTokenSource.Cancel();
+            if (pressCount == 1)
+            {
+                eventArgs.Cancel = true;
+
+                log.Warning(
+                    "Cancellation requested (Ctrl+C) — finishing in-flight file(s) and shutting down. Files that already completed are preserved in the journal; resume with --resume {RunId}. Press Ctrl+C again to abort immediately.",
+                    runId);
+
+                // ReSharper disable once AccessToDisposedClosure -- the handler is unsubscribed in the finally below before the token source is disposed
+                cancellationTokenSource.Cancel();
+            }
+            else
+            {
+                // second (or subsequent) Ctrl+C — do not set Cancel=true, let the OS terminate
+                // the process. The journal on disk still holds every file that reached Phase 1's
+                // finally block prior to the abort.
+                log.Warning("Second cancellation requested — aborting immediately without waiting for in-flight file(s).");
+            }
         }
 
         Console.CancelKeyPress += CancelKeyPressHandler;

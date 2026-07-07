@@ -14,13 +14,21 @@ internal sealed class RunContext : IRunContext
     ///     Initializes a new instance of the <see cref="RunContext" /> class.
     /// </summary>
     /// <param name="runId">The run identifier chosen at startup.</param>
-    public RunContext(string runId)
+    /// <param name="effectiveOutputDirectory">
+    ///     The directory where the spreadsheet, log, and journal for this run will be written.
+    /// </param>
+    public RunContext(string runId, string effectiveOutputDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(effectiveOutputDirectory);
 
         this.RunId = runId;
+        this.EffectiveOutputDirectory = effectiveOutputDirectory;
     }
 
     /// <inheritdoc />
     public string RunId { get; }
+
+    /// <inheritdoc />
+    public string EffectiveOutputDirectory { get; }
 }

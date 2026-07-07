@@ -14,4 +14,7 @@ public class ProduceFileUserListOptions
 
     [Option('o', "output", Required = false, HelpText = "Full path of the .xlsx spreadsheet to write.")]
     public string? OutputPath { get; set; }
+
+    [Option('r', "resume", Required = false, HelpText = "Resume a previously-crashed run by RunID (e.g., swift-otter-runs). Fails if the journal file for that RunID is not found in the output folder, or if it has already been marked completed.")]
+    public string? ResumeRunId { get; set; }
 }

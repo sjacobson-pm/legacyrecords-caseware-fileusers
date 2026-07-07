@@ -44,6 +44,7 @@ internal class FileUserService : IFileUserService
     private readonly IServiceScopeFactory serviceScopeFactory;
     private readonly ISupportUserFilter supportUserFilter;
     private readonly IRunContext runContext;
+    private readonly IRunJournal runJournal;
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="FileUserService" /> class.
@@ -59,6 +60,8 @@ internal class FileUserService : IFileUserService
     /// the lifetime of the run).</param>
     /// <param name="runContext">The current run's context (supplies the RunID used to name the
     /// default output file when neither <c>--output</c> nor <c>Output:FilePath</c> is set).</param>
+    /// <param name="runJournal">The durable per-file record consulted for resume and appended to
+    /// as Phase 1 completes each file.</param>
     public FileUserService(
         IOptions<ConfigurationOptions> optionsAccessor,
         ILogger<FileUserService> logger,
@@ -67,7 +70,8 @@ internal class FileUserService : IFileUserService
         IFileUserSpreadsheetWriter spreadsheetWriter,
         IServiceScopeFactory serviceScopeFactory,
         ISupportUserFilter supportUserFilter,
-        IRunContext runContext)
+        IRunContext runContext,
+        IRunJournal runJournal)
     {
         ArgumentNullException.ThrowIfNull(optionsAccessor);
         ArgumentNullException.ThrowIfNull(logger);
@@ -77,6 +81,7 @@ internal class FileUserService : IFileUserService
         ArgumentNullException.ThrowIfNull(serviceScopeFactory);
         ArgumentNullException.ThrowIfNull(supportUserFilter);
         ArgumentNullException.ThrowIfNull(runContext);
+        ArgumentNullException.ThrowIfNull(runJournal);
 
         this.options = optionsAccessor.Value;
         this.logger = logger;
@@ -86,6 +91,7 @@ internal class FileUserService : IFileUserService
         this.serviceScopeFactory = serviceScopeFactory;
         this.supportUserFilter = supportUserFilter;
         this.runContext = runContext;
+        this.runJournal = runJournal;
     }
 
     /// <inheritdoc />
@@ -106,10 +112,17 @@ internal class FileUserService : IFileUserService
                 return parsed;
             });
 
-        // Phase 0 — bounded query for the file-ID inputs and build the per-input work items
+        // Phase 0 — bounded query for the file-ID inputs and build the per-input work items, then
+        // consult the resume journal to skip any that were already processed in a prior run
         var workItems = await PhaseScope.RunAsync(
             "Phase 0 — Resolve file IDs",
-            () => this.BuildWorkItemsAsync(items, cancellationToken)).ConfigureAwait(false);
+            async () =>
+            {
+                var built = await this.BuildWorkItemsAsync(items, cancellationToken).ConfigureAwait(false);
+                await this.ApplyResumeJournalAsync(built, cancellationToken).ConfigureAwait(false);
+
+                return built;
+            }).ConfigureAwait(false);
 
         // Phase 1 — parallel CaseWare reads (no database, bounded by MaxDegreeOfParallelism)
         await PhaseScope.RunAsync(
@@ -148,6 +161,11 @@ internal class FileUserService : IFileUserService
 
                 return Task.CompletedTask;
             }).ConfigureAwait(false);
+
+        // Rename the in-flight journal so a subsequent --resume against this RunID fails loudly.
+        // Fires only after Phase 3 succeeds; if Phase 3 throws, the .journal.jsonl is left as-is
+        // for a resume attempt to pick up.
+        await this.runJournal.MarkCompletedAsync().ConfigureAwait(false);
     }
 
     private async Task<List<FileWorkItem>> BuildWorkItemsAsync(IReadOnlyList<FileInputItem> items, CancellationToken cancellationToken)
@@ -182,6 +200,7 @@ internal class FileUserService : IFileUserService
                 if (uncPathsById.TryGetValue(item.FileId!.Value, out var uncPath) && !string.IsNullOrWhiteSpace(uncPath))
                 {
                     workItem.UncPath = uncPath;
+                    workItem.NormalizedKey = this.NormalizeUncPath(uncPath);
                     workItem.DisplayName = $"{uncPath} (ID {item.FileId})";
                     workItem.LogName = $"{LogPathFormatter.FormatForLog(uncPath)} (ID {item.FileId})";
                 }
@@ -195,6 +214,7 @@ internal class FileUserService : IFileUserService
             else
             {
                 workItem.UncPath = item.UncPath;
+                workItem.NormalizedKey = this.NormalizeUncPath(item.UncPath!);
                 workItem.DisplayName = item.UncPath!;
                 workItem.LogName = LogPathFormatter.FormatForLog(item.UncPath);
             }
@@ -205,12 +225,84 @@ internal class FileUserService : IFileUserService
         return workItems;
     }
 
+    /// <summary>
+    ///     Normalizes a UNC path to the identity key used for resume matching. Uses
+    ///     <see cref="Path.GetFullPath(string)" /> to canonicalize any relative components, then
+    ///     lowercases via <see cref="string.ToLowerInvariant" /> so case-insensitive UNC paths
+    ///     (<c>\\SRV\a.ac_</c> vs. <c>\\srv\a.ac_</c>) compare equal.
+    /// </summary>
+    /// <param name="uncPath">The UNC path to normalize.</param>
+    /// <returns>The normalized identity key.</returns>
+    private string NormalizeUncPath(string uncPath)
+    {
+        _ = this; // instance method to satisfy SA1204 (statics before instance) without moving the helper away from its only caller
+        return Path.GetFullPath(uncPath).ToLowerInvariant();
+    }
+
+    /// <summary>
+    ///     If a resume journal is present, applies its entries to the corresponding work items:
+    ///     pre-populates <c>UserIdentifiers</c> and <c>Errors</c> from the journal entry, and marks
+    ///     the item as pre-populated so Phase 1 skips it. Entries with recorded errors are honored
+    ///     only when <c>Processing:RetryErroredFilesOnResume</c> is <c>false</c>; when <c>true</c>,
+    ///     they are ignored so the file is reprocessed and a fresh journal entry appended.
+    /// </summary>
+    /// <param name="workItems">The work items built by <see cref="BuildWorkItemsAsync" />.</param>
+    /// <param name="cancellationToken">Token to observe for cancellation.</param>
+    /// <returns>A task that completes when the resume state has been applied.</returns>
+    private async Task ApplyResumeJournalAsync(IReadOnlyList<FileWorkItem> workItems, CancellationToken cancellationToken)
+    {
+        var journalDict = await this.runJournal.LoadForResumeAsync(cancellationToken).ConfigureAwait(false);
+
+        if (journalDict.Count == 0)
+        {
+            return;
+        }
+
+        var retryErroredFiles = this.options.Processing.RetryErroredFilesOnResume;
+        var skippedCount = 0;
+        var retriedCount = 0;
+
+        foreach (var workItem in workItems)
+        {
+            if (workItem.NormalizedKey == null)
+            {
+                continue;
+            }
+
+            if (!journalDict.TryGetValue(workItem.NormalizedKey, out var entry))
+            {
+                continue;
+            }
+
+            if (entry.Errors.Count > 0 && retryErroredFiles)
+            {
+                // journal entry has errors and the caller opted into retrying — leave the work
+                // item untouched so it flows through Phase 1 as a fresh read
+                retriedCount++;
+                continue;
+            }
+
+            // pre-populate identifiers and errors from the journal entry; Phase 1 will skip it
+            workItem.UserIdentifiers = entry.UserIdentifiers.ToList();
+            workItem.Errors.AddRange(entry.Errors);
+            workItem.PrePopulatedFromJournal = true;
+            skippedCount++;
+        }
+
+        this.logger.LogInformation(
+            "Resume: {SkippedCount} file(s) skipped from prior journal; {RetriedCount} previously-errored file(s) will be retried (RetryErroredFilesOnResume = {RetryFlag}).",
+            skippedCount,
+            retriedCount,
+            retryErroredFiles);
+    }
+
     private async Task ReadCaseWareIdentifiersAsync(IReadOnlyList<FileWorkItem> workItems, CancellationToken cancellationToken)
     {
-        // items whose Phase 0 file-ID lookup failed have no UNC path; those items already have their
-        // errors recorded and there is nothing for Phase 1 to do with them — filter them out here
-        // rather than let each pipeline stage skip them
-        var itemsToProcess = workItems.Where(item => item.UncPath != null).ToList();
+        // Items whose Phase 0 file-ID lookup failed have no UNC path; items that were pre-populated
+        // from a resume journal entry already have their identifiers/errors from the prior run.
+        // Both categories skip the Phase 1 pipeline entirely — no copy, no CaseWare open, no
+        // workspace churn.
+        var itemsToProcess = workItems.Where(item => item.UncPath != null && !item.PrePopulatedFromJournal).ToList();
 
         if (itemsToProcess.Count == 0)
         {
@@ -308,6 +400,11 @@ internal class FileUserService : IFileUserService
             {
                 this.workspaceManager.DeleteWorkspace(workspaceDirectory);
             }
+
+            // The copy failed durably enough to be worth recording — journal this outcome so a
+            // resume can honor the "file was tried and failed" record (or retry it, per the
+            // RetryErroredFilesOnResume setting).
+            await this.AppendJournalEntryAsync(workItem).ConfigureAwait(false);
         }
     }
 
@@ -318,17 +415,15 @@ internal class FileUserService : IFileUserService
         await Parallel.ForEachAsync(
                            reader.ReadAllAsync(cancellationToken),
                            parallelOptions,
-                           (stagedFile, token) =>
+                           async (stagedFile, token) =>
                            {
                                token.ThrowIfCancellationRequested();
-                               this.ProcessStagedFile(stagedFile);
-
-                               return ValueTask.CompletedTask;
+                               await this.ProcessStagedFileAsync(stagedFile).ConfigureAwait(false);
                            })
                       .ConfigureAwait(false);
     }
 
-    private void ProcessStagedFile(StagedFile stagedFile)
+    private async Task ProcessStagedFileAsync(StagedFile stagedFile)
     {
         var workItem = stagedFile.WorkItem;
 
@@ -357,8 +452,40 @@ internal class FileUserService : IFileUserService
         }
         finally
         {
+            // Journal the per-file outcome durably BEFORE workspace cleanup so a crash mid-cleanup
+            // still leaves a valid record for a subsequent --resume to honor.
+            await this.AppendJournalEntryAsync(workItem).ConfigureAwait(false);
             this.workspaceManager.DeleteWorkspace(stagedFile.WorkspaceDirectory);
         }
+    }
+
+    /// <summary>
+    ///     Builds a <see cref="JournalEntry" /> from a work item's current state and appends it to
+    ///     the journal. Uses <see cref="CancellationToken.None" /> so a Ctrl+C after the CaseWare
+    ///     read finished does not lose the record of that read.
+    /// </summary>
+    /// <param name="workItem">The work item whose current state should be captured.</param>
+    /// <returns>A task that completes once the entry is written and flushed.</returns>
+    private async Task AppendJournalEntryAsync(FileWorkItem workItem)
+    {
+        if (workItem.UncPath == null || workItem.NormalizedKey == null)
+        {
+            // Phase 0 failures never reach Phase 1 and have no UNC path — nothing to journal
+            return;
+        }
+
+        var entry = new JournalEntry
+        {
+            Timestamp = DateTime.UtcNow,
+            UncPath = workItem.UncPath,
+            NormalizedKey = workItem.NormalizedKey,
+            FileId = workItem.Input.FileId,
+            DisplayName = workItem.DisplayName,
+            UserIdentifiers = (workItem.UserIdentifiers ?? Array.Empty<string>()).ToArray(),
+            Errors = workItem.Errors.ToArray(),
+        };
+
+        await this.runJournal.AppendAsync(entry, CancellationToken.None).ConfigureAwait(false);
     }
 
     private async Task<ILookup<string, Staff>> LoadStaffAsync(IReadOnlyList<FileWorkItem> workItems, CancellationToken cancellationToken)
@@ -474,14 +601,19 @@ internal class FileUserService : IFileUserService
     private sealed record StagedFile(FileWorkItem WorkItem, string WorkspaceDirectory, string LocalFilePath);
 
     // the per-input state that flows through the three phases:
-    //   Input             - the original parsed input
-    //   UncPath           - the resolved UNC path, or null if it could not be resolved
-    //   DisplayName       - the full human-readable label written to the spreadsheet
-    //   LogName           - the compact label used in log messages (just file name and parent)
-    //   UserIdentifiers   - the FILE-group identifiers read in Phase 1; null means the file was
-    //                       never opened (Phase 1 was skipped because the file-ID lookup failed,
-    //                       or it threw before any identifiers were read)
-    //   Errors            - file-level errors accumulated across the phases
+    //   Input                    - the original parsed input
+    //   UncPath                  - the resolved UNC path, or null if it could not be resolved
+    //   NormalizedKey            - lowercase-full-path identity key for resume matching; null when
+    //                              UncPath is null
+    //   DisplayName              - the full human-readable label written to the spreadsheet
+    //   LogName                  - the compact label used in log messages (just file name and parent)
+    //   UserIdentifiers          - the FILE-group identifiers read in Phase 1; null means the file
+    //                              was never opened (Phase 1 was skipped because the file-ID
+    //                              lookup failed, or it threw before any identifiers were read)
+    //   Errors                   - file-level errors accumulated across the phases
+    //   PrePopulatedFromJournal  - true when the item's identifiers/errors came from a resume
+    //                              journal entry rather than a fresh Phase 1 read; such items skip
+    //                              the Phase 1 pipeline entirely
     private sealed class FileWorkItem
     {
         public FileWorkItem(FileInputItem input)
@@ -493,6 +625,8 @@ internal class FileUserService : IFileUserService
 
         public string? UncPath { get; set; }
 
+        public string? NormalizedKey { get; set; }
+
         public string DisplayName { get; set; } = string.Empty;
 
         public string LogName { get; set; } = string.Empty;
@@ -500,5 +634,7 @@ internal class FileUserService : IFileUserService
         public IReadOnlyList<string>? UserIdentifiers { get; set; }
 
         public List<string> Errors { get; } = new();
+
+        public bool PrePopulatedFromJournal { get; set; }
     }
 }

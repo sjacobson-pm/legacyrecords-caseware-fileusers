@@ -12,4 +12,13 @@ public interface IRunContext
     /// </summary>
     /// <value>The run identifier for this invocation of the tool.</value>
     string RunId { get; }
+
+    /// <summary>
+    ///     Gets the directory where this run's artifacts (spreadsheet, log, journal) are written.
+    ///     Resolved once at startup from CLI <c>--output</c>, then <c>Output:FilePath</c>, then
+    ///     <c>Output:Directory</c>, then the current working directory — the same precedence used
+    ///     for the spreadsheet output path. Every artifact for this run lives here.
+    /// </summary>
+    /// <value>An absolute-or-relative directory path; never <c>null</c> or empty.</value>
+    string EffectiveOutputDirectory { get; }
 }

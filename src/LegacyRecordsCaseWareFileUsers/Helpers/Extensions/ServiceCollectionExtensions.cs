@@ -26,11 +26,18 @@ public static class ServiceCollectionExtensions
     ///     The run identifier chosen at startup by <see cref="Helpers.RunIdGenerator" />. Registered
     ///     as an <see cref="IRunContext" /> singleton so every collaborator observes the same value.
     /// </param>
+    /// <param name="effectiveOutputDirectory">
+    ///     The directory where the run's artifacts (spreadsheet, log, journal) will be written.
+    ///     Registered as part of <see cref="IRunContext" /> so every collaborator agrees on it.
+    /// </param>
     /// <returns>The same service collection, to allow chaining.</returns>
-    public static IServiceCollection AddConsoleAppServices(this IServiceCollection services, ConfigurationOptions configOptions, string runId)
+    public static IServiceCollection AddConsoleAppServices(this IServiceCollection services, ConfigurationOptions configOptions, string runId, string effectiveOutputDirectory)
     {
-        // run context (shared by every collaborator that needs the RunID)
-        services.AddSingleton<IRunContext>(new RunContext(runId));
+        // run context (shared by every collaborator that needs the RunID and output directory)
+        services.AddSingleton<IRunContext>(new RunContext(runId, effectiveOutputDirectory));
+
+        // run journal — one per run, holds a SemaphoreSlim + open-file handle logic, so singleton
+        services.AddSingleton<IRunJournal, RunJournal>();
 
         // database context (the shared CaseWare File Management database)
         services.AddDbContext<CaseWareFileManagementDbContext>(o => o.UseSqlServer(configOptions.ConnectionStrings.CaseWareFileManagement));

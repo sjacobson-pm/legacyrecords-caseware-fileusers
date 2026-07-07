@@ -26,4 +26,13 @@ public class ProcessingOptions
     // prefetch the next file(s) while the current one is being processed. Copies queue into a
     // bounded channel so raising this does not create unbounded local-disk pressure.
     public int MaxCopyDegreeOfParallelism { get; set; }
+
+    // Controls what happens on --resume when a journal entry has one or more recorded errors from
+    // the prior run. When false (the default), the resume "trusts the journal" — the errored entry
+    // is honored verbatim and the file is not reprocessed. When true, journal entries with errors
+    // are ignored on resume and the file goes through Phase 1 again as if it had never been seen;
+    // the retry's outcome (success or failure) is appended to the journal alongside the prior
+    // errored entry, and last-wins deduplication ensures the retry replaces the earlier record on
+    // subsequent resumes.
+    public bool RetryErroredFilesOnResume { get; set; }
 }

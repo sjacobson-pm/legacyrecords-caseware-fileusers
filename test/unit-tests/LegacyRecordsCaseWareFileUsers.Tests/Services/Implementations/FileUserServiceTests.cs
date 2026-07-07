@@ -28,6 +28,7 @@ public class FileUserServiceTests
     private readonly IFileUserSpreadsheetWriter spreadsheetWriter = Substitute.For<IFileUserSpreadsheetWriter>();
     private readonly IServiceScopeFactory serviceScopeFactory = Substitute.For<IServiceScopeFactory>();
     private readonly IRunContext runContext = Substitute.For<IRunContext>();
+    private readonly IRunJournal runJournal = Substitute.For<IRunJournal>();
 
     private IReadOnlyList<FileUserResult>? capturedResults;
 
@@ -60,6 +61,12 @@ public class FileUserServiceTests
             .Do(ci => this.capturedResults = ci.ArgAt<IReadOnlyList<FileUserResult>>(0));
 
         this.runContext.RunId.Returns("test-swift-otter-runs");
+        this.runContext.EffectiveOutputDirectory.Returns(@"C:\test-output");
+
+        // default: empty journal (no resume state)
+        this.runJournal.LoadForResumeAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyDictionary<string, JournalEntry>>(
+                new Dictionary<string, JournalEntry>(StringComparer.Ordinal)));
     }
 
     [Fact]
@@ -214,6 +221,156 @@ public class FileUserServiceTests
     }
 
     [Fact]
+    public async Task RunAsync_Resume_SkipsFilesAlreadyInJournal_AndDoesNotInvokePipeline()
+    {
+        // Two files in the input; the journal claims we already processed the first one. That file
+        // should skip Phase 1 entirely (retriever + workspaceManager untouched for it) while its
+        // identifiers still feed Phase 2 and land in the final spreadsheet.
+        this.GivenInputs(
+            new FileInputItem(@"\\srv\resumed.ac_", null, @"\\srv\resumed.ac_"),
+            new FileInputItem(@"\\srv\fresh.ac_", null, @"\\srv\fresh.ac_"));
+
+        var resumedKey = System.IO.Path.GetFullPath(@"\\srv\resumed.ac_").ToLowerInvariant();
+        var resumedEntry = new JournalEntry
+        {
+            Timestamp = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            UncPath = @"\\srv\resumed.ac_",
+            NormalizedKey = resumedKey,
+            FileId = null,
+            DisplayName = @"\\srv\resumed.ac_",
+            UserIdentifiers = new[] { "AAA" },
+            Errors = Array.Empty<string>(),
+        };
+        this.runJournal.LoadForResumeAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyDictionary<string, JournalEntry>>(
+                new Dictionary<string, JournalEntry>(StringComparer.Ordinal) { [resumedKey] = resumedEntry }));
+
+        this.retriever.GetFileSecurityGroupUserIdentifiers(@"\\srv\fresh.ac_").Returns(new List<string> { "BBB" });
+
+        var sut = this.CreateSut();
+
+        // Act
+        await sut.RunAsync(null, null, TestContext.Current.CancellationToken);
+
+        // Assert — retriever only invoked for the file NOT in the journal
+        this.retriever.DidNotReceive().GetFileSecurityGroupUserIdentifiers(@"\\srv\resumed.ac_");
+        this.retriever.Received(1).GetFileSecurityGroupUserIdentifiers(@"\\srv\fresh.ac_");
+
+        // Result set includes both files in input order
+        this.capturedResults!.Count.ShouldBe(2);
+        this.capturedResults[0].DisplayName.ShouldBe(@"\\srv\resumed.ac_");
+        this.capturedResults[1].DisplayName.ShouldBe(@"\\srv\fresh.ac_");
+    }
+
+    [Fact]
+    public async Task RunAsync_Resume_DefaultRetrySetting_HonorsErroredJournalEntry()
+    {
+        // Default RetryErroredFilesOnResume = false — a journal entry with errors is trusted;
+        // the file is not re-attempted and its errors appear in the output verbatim.
+        this.GivenInputs(new FileInputItem(@"\\srv\errored.ac_", null, @"\\srv\errored.ac_"));
+
+        var key = System.IO.Path.GetFullPath(@"\\srv\errored.ac_").ToLowerInvariant();
+        var erroredEntry = new JournalEntry
+        {
+            Timestamp = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            UncPath = @"\\srv\errored.ac_",
+            NormalizedKey = key,
+            FileId = null,
+            DisplayName = @"\\srv\errored.ac_",
+            UserIdentifiers = Array.Empty<string>(),
+            Errors = new[] { "prior run: could not open CaseWare file" },
+        };
+        this.runJournal.LoadForResumeAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyDictionary<string, JournalEntry>>(
+                new Dictionary<string, JournalEntry>(StringComparer.Ordinal) { [key] = erroredEntry }));
+
+        var sut = this.CreateSut();
+
+        // Act
+        await sut.RunAsync(null, null, TestContext.Current.CancellationToken);
+
+        // Assert — retriever was NOT called (trust the journal); the prior error is preserved
+        this.retriever.DidNotReceiveWithAnyArgs().GetFileSecurityGroupUserIdentifiers(default!);
+        var result = this.capturedResults.ShouldHaveSingleItem();
+        result.Errors.ShouldContain(e => e.Contains("could not open CaseWare file"));
+    }
+
+    [Fact]
+    public async Task RunAsync_Resume_WithRetryEnabled_ReprocessesErroredJournalEntry()
+    {
+        // RetryErroredFilesOnResume = true — a journal entry with errors is ignored on load; the
+        // file goes through Phase 1 again and its fresh result replaces the prior error.
+        this.GivenInputs(new FileInputItem(@"\\srv\errored.ac_", null, @"\\srv\errored.ac_"));
+
+        var key = System.IO.Path.GetFullPath(@"\\srv\errored.ac_").ToLowerInvariant();
+        var erroredEntry = new JournalEntry
+        {
+            Timestamp = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            UncPath = @"\\srv\errored.ac_",
+            NormalizedKey = key,
+            FileId = null,
+            DisplayName = @"\\srv\errored.ac_",
+            UserIdentifiers = Array.Empty<string>(),
+            Errors = new[] { "prior run: could not open CaseWare file" },
+        };
+        this.runJournal.LoadForResumeAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyDictionary<string, JournalEntry>>(
+                new Dictionary<string, JournalEntry>(StringComparer.Ordinal) { [key] = erroredEntry }));
+
+        this.retriever.GetFileSecurityGroupUserIdentifiers(@"\\srv\errored.ac_").Returns(new List<string> { "AAA" });
+
+        var sut = this.CreateSut(retryErroredFilesOnResume: true);
+
+        // Act
+        await sut.RunAsync(null, null, TestContext.Current.CancellationToken);
+
+        // Assert — retriever ran again and the prior error is no longer part of the result
+        this.retriever.Received(1).GetFileSecurityGroupUserIdentifiers(@"\\srv\errored.ac_");
+        var result = this.capturedResults.ShouldHaveSingleItem();
+        result.Errors.ShouldNotContain(e => e.Contains("could not open CaseWare file"));
+    }
+
+    [Fact]
+    public async Task RunAsync_Resume_MarkCompletedAsyncFires_AfterSuccessfulPhase3()
+    {
+        // The journal must be renamed to .completed.jsonl once Phase 3 finishes so a subsequent
+        // --resume against this RunID fails loudly rather than silently re-honoring the completed
+        // record.
+        this.GivenInputs(new FileInputItem(@"\\srv\a.ac_", null, @"\\srv\a.ac_"));
+        this.retriever.GetFileSecurityGroupUserIdentifiers(@"\\srv\a.ac_").Returns(new List<string>());
+
+        var sut = this.CreateSut();
+
+        // Act
+        await sut.RunAsync(null, null, TestContext.Current.CancellationToken);
+
+        // Assert
+        await this.runJournal.Received(1).MarkCompletedAsync();
+    }
+
+    [Fact]
+    public async Task RunAsync_AppendsJournalEntry_ForEveryFileThatReachesPhase1()
+    {
+        // Every file that flows through Phase 1 — success or per-file error — should have its
+        // outcome durably appended to the journal.
+        this.GivenInputs(
+            new FileInputItem(@"\\srv\good.ac_", null, @"\\srv\good.ac_"),
+            new FileInputItem(@"\\srv\bad.ac_", null, @"\\srv\bad.ac_"));
+
+        this.retriever.GetFileSecurityGroupUserIdentifiers(@"\\srv\good.ac_").Returns(new List<string> { "AAA" });
+        this.retriever.GetFileSecurityGroupUserIdentifiers(@"\\srv\bad.ac_")
+            .Returns<ICollection<string>>(_ => throw new InvalidOperationException("boom"));
+
+        var sut = this.CreateSut();
+
+        // Act
+        await sut.RunAsync(null, null, TestContext.Current.CancellationToken);
+
+        // Assert — one journal entry per file, whether it succeeded or errored
+        await this.runJournal.Received(2).AppendAsync(Arg.Any<JournalEntry>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task RunAsync_ProcessesFilesConcurrently_UpToTheConfiguredDegree()
     {
         // Arrange
@@ -293,11 +450,15 @@ public class FileUserServiceTests
         this.inputReader.ReadInputs(Arg.Any<string?>()).Returns(items.ToList());
     }
 
-    private FileUserService CreateSut(int maxDegreeOfParallelism = 0)
+    private FileUserService CreateSut(int maxDegreeOfParallelism = 0, bool retryErroredFilesOnResume = false)
     {
         var options = Microsoft.Extensions.Options.Options.Create(new ConfigurationOptions
         {
-            Processing = new ProcessingOptions { MaxDegreeOfParallelism = maxDegreeOfParallelism },
+            Processing = new ProcessingOptions
+            {
+                MaxDegreeOfParallelism = maxDegreeOfParallelism,
+                RetryErroredFilesOnResume = retryErroredFilesOnResume,
+            },
         });
         var logger = Substitute.For<ILogger<FileUserService>>();
 
@@ -309,6 +470,7 @@ public class FileUserServiceTests
             this.spreadsheetWriter,
             this.serviceScopeFactory,
             this.supportUserFilter,
-            this.runContext);
+            this.runContext,
+            this.runJournal);
     }
 }
