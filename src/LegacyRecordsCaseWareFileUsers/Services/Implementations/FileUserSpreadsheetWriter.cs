@@ -9,13 +9,22 @@ using Microsoft.Extensions.Logging;
 namespace LegacyRecordsCaseWareFileUsers.Services.Implementations;
 
 /// <summary>
-///     Writes per-file user results to an .xlsx spreadsheet using ClosedXML, grouped by file. Styles
-///     are constructed once per workbook and reused for every cell that needs them, so a batch of
-///     thousands of files does not allocate a fresh style object per cell.
+///     Writes per-file user results to an .xlsx spreadsheet using ClosedXML. Output is a single
+///     "File Users" worksheet formatted as an Excel Table (autofilter, frozen header row, banded
+///     rows), one row per (file × user) pair. Files with errors produce an additional row per
+///     error; files with neither users nor errors produce a single informational placeholder row.
+///     Input order is preserved across files, and users within a file are sorted alphabetically by
+///     name (same as the prior block-per-file output).
+///     <para>
+///         The Share column is populated from <c>OutputOptions.ShareSegmentIndex</c> so consumers
+///         can filter or group by share directly in Excel without needing separate worksheets.
+///     </para>
 /// </summary>
 internal class FileUserSpreadsheetWriter : IFileUserSpreadsheetWriter
 {
     private const string WorksheetName = "File Users";
+    private const string TableName = "FileUsers";
+    private const string NoUsersInformationalNote = "(no users assigned in the FILE security group)";
 
     private readonly ILogger<FileUserSpreadsheetWriter> logger;
 
@@ -46,132 +55,148 @@ internal class FileUserSpreadsheetWriter : IFileUserSpreadsheetWriter
 
         using var workbook = new XLWorkbook();
         var worksheet = workbook.Worksheets.Add(WorksheetName);
-        var styles = SpreadsheetStyles.Create();
 
-        var row = 1;
+        // header row — must be present even for empty result sets so the Excel Table has a valid
+        // shape; the AutoFilter will then be a no-op instead of throwing on an empty range
+        WriteHeaderRow(worksheet);
 
-        foreach (var result in results)
+        var lastDataRow = WriteAllDataRows(worksheet, results);
+
+        // Excel Table on the populated range: gives users free autofilter dropdowns on every
+        // column, frozen header row, and banded row shading. If no data rows were emitted, size
+        // the table to just the header row.
+        var lastRowForTable = lastDataRow >= 2 ? lastDataRow : 2;
+        if (lastDataRow < 2)
         {
-            row = WriteFileBlock(worksheet, row, result, styles);
-
-            // blank spacer row between files
-            row++;
+            // ensure at least one row exists under the header so ClosedXML can form a table range
+            worksheet.Cell(2, 1).Value = string.Empty;
         }
 
-        worksheet.Columns(1, 3).AdjustToContents();
+        var table = worksheet.Range(1, 1, lastRowForTable, 6).CreateTable(TableName);
+        table.ShowAutoFilter = true;
+        table.Theme = XLTableTheme.TableStyleLight9;
+
+        worksheet.SheetView.FreezeRows(1);
+        worksheet.Columns(1, 6).AdjustToContents();
 
         workbook.SaveAs(outputFilePath);
 
-        this.logger.LogInformation("Finished writing spreadsheet for {FileCount} file(s).", results.Count);
+        this.logger.LogInformation(
+            "Finished writing spreadsheet for {FileCount} file(s) → {DataRowCount} data row(s).",
+            results.Count,
+            Math.Max(0, lastDataRow - 1));
     }
 
-    private static int WriteFileBlock(IXLWorksheet worksheet, int row, FileUserResult result, SpreadsheetStyles styles)
+    private static void WriteHeaderRow(IXLWorksheet worksheet)
     {
-        var headerCell = worksheet.Cell(row, 1);
-        headerCell.Value = $"File: {result.DisplayName}";
-        headerCell.Style = styles.FileHeader;
-        worksheet.Range(row, 1, row, 3).Merge();
-        row++;
+        worksheet.Cell(1, 1).Value = "Share";
+        worksheet.Cell(1, 2).Value = "File";
+        worksheet.Cell(1, 3).Value = "Full Name";
+        worksheet.Cell(1, 4).Value = "Office";
+        worksheet.Cell(1, 5).Value = "Position";
+        worksheet.Cell(1, 6).Value = "Errors";
+    }
 
-        worksheet.Cell(row, 1).Value = "Full Name";
-        worksheet.Cell(row, 1).Style = styles.ColumnHeader;
-        worksheet.Cell(row, 2).Value = "Office";
-        worksheet.Cell(row, 2).Style = styles.ColumnHeader;
-        worksheet.Cell(row, 3).Value = "Position";
-        worksheet.Cell(row, 3).Style = styles.ColumnHeader;
-        row++;
+    /// <summary>
+    ///     Writes every data row for every file result in input order, returning the last row
+    ///     number used (1 if no data rows were emitted — only the header is present).
+    /// </summary>
+    /// <param name="worksheet">The worksheet to write into.</param>
+    /// <param name="results">The per-file results in input order.</param>
+    /// <returns>The row number of the last populated row (1 when only the header exists).</returns>
+    private static int WriteAllDataRows(IXLWorksheet worksheet, IReadOnlyList<FileUserResult> results)
+    {
+        var row = 2; // row 1 is the header
 
-        if (result.Users.Count == 0)
+        foreach (var result in results)
         {
-            var noUsersCell = worksheet.Cell(row, 1);
-            noUsersCell.Value = "No users assigned.";
-            noUsersCell.Style = styles.NoUsers;
-            row++;
-        }
-        else
-        {
+            // A file with users emits one row per user. A file with errors emits an additional row
+            // per error (user columns blank, Errors populated). A file with neither users nor
+            // errors emits a single placeholder row so the file still appears in the sheet — its
+            // Errors column carries an informational note explaining why it looks empty.
+            var wroteAnyRow = false;
+
+            var fileLabel = FormatFileForColumn(result);
+
             foreach (var user in result.Users)
             {
-                worksheet.Cell(row, 1).Value = user.FullName;
-                worksheet.Cell(row, 2).Value = user.Office;
-                worksheet.Cell(row, 3).Value = user.Position;
-                row++;
-            }
-        }
+                worksheet.Cell(row, 1).Value = result.Share;
+                worksheet.Cell(row, 2).Value = fileLabel;
+                worksheet.Cell(row, 3).Value = user.FullName;
+                worksheet.Cell(row, 4).Value = user.Office;
+                worksheet.Cell(row, 5).Value = user.Position;
 
-        if (result.Errors.Count > 0)
-        {
-            var errorsHeader = worksheet.Cell(row, 1);
-            errorsHeader.Value = "Errors:";
-            errorsHeader.Style = styles.ErrorsHeader;
-            row++;
+                // Errors column is left blank for user rows so filtering by non-empty Errors
+                // finds only the error/placeholder rows.
+                row++;
+                wroteAnyRow = true;
+            }
 
             foreach (var error in result.Errors)
             {
-                var errorCell = worksheet.Cell(row, 1);
-                errorCell.Value = error;
-                errorCell.Style = styles.ErrorRow;
-                worksheet.Range(row, 1, row, 3).Merge();
+                worksheet.Cell(row, 1).Value = result.Share;
+                worksheet.Cell(row, 2).Value = fileLabel;
+
+                // user columns intentionally blank on error rows
+                worksheet.Cell(row, 6).Value = error;
+                row++;
+                wroteAnyRow = true;
+            }
+
+            if (!wroteAnyRow)
+            {
+                worksheet.Cell(row, 1).Value = result.Share;
+                worksheet.Cell(row, 2).Value = fileLabel;
+                worksheet.Cell(row, 6).Value = NoUsersInformationalNote;
                 row++;
             }
         }
 
-        return row;
+        return row - 1;
     }
 
-    // Named IXLStyle instances built once per Write() call and reused across every cell that needs
-    // them. Each style is derived from XLWorkbook.DefaultStyle — that static returns a fresh IXLStyle
-    // wrapper on every access, so the five styles below stay independent (unlike IXLWorkbook.Style,
-    // which returns a single mutable reference and bleeds mutations across accesses).
-    //
-    // Reusing the same IXLStyle for many cells also lets ClosedXML deduplicate the underlying style
-    // key in the OpenXML output, which keeps large workbooks smaller on disk.
-    private sealed class SpreadsheetStyles
+    /// <summary>
+    ///     Formats the <c>File</c> column value for a result. When a UNC path is known and the
+    ///     Share column captures a prefix of it, returns the portion of the path <em>after</em>
+    ///     the share prefix — so <c>Share + "\" + File</c> reconstructs the full UNC path
+    ///     regardless of intermediate depth. When Share is empty (path shallower than the share
+    ///     segment index), the full path is shown as-is. File-ID-input results retain their
+    ///     <c>(ID N)</c> annotation; results with no UNC path (Phase 0 lookup failures) fall back
+    ///     to the raw display name.
+    /// </summary>
+    /// <param name="result">The per-file result.</param>
+    /// <returns>The value to write into the <c>File</c> column.</returns>
+    private static string FormatFileForColumn(FileUserResult result)
     {
-        private SpreadsheetStyles(
-            IXLStyle fileHeader,
-            IXLStyle columnHeader,
-            IXLStyle noUsers,
-            IXLStyle errorsHeader,
-            IXLStyle errorRow)
+        if (string.IsNullOrEmpty(result.UncPath))
         {
-            this.FileHeader = fileHeader;
-            this.ColumnHeader = columnHeader;
-            this.NoUsers = noUsers;
-            this.ErrorsHeader = errorsHeader;
-            this.ErrorRow = errorRow;
+            // Phase 0 lookup failed (no UNC path resolved) — show whatever the DisplayName is;
+            // typically that's "File ID 42".
+            return result.DisplayName;
         }
 
-        public IXLStyle FileHeader { get; }
+        // Normalize separators so forward-slash-form UNC input compares cleanly against the
+        // backslash-form Share prefix produced by UncShareExtractor.
+        var normalizedPath = result.UncPath.Replace('/', '\\');
 
-        public IXLStyle ColumnHeader { get; }
+        string relativePath;
 
-        public IXLStyle NoUsers { get; }
-
-        public IXLStyle ErrorsHeader { get; }
-
-        public IXLStyle ErrorRow { get; }
-
-        public static SpreadsheetStyles Create()
+        if (!string.IsNullOrEmpty(result.Share)
+            && normalizedPath.StartsWith(result.Share, StringComparison.OrdinalIgnoreCase))
         {
-            var fileHeader = XLWorkbook.DefaultStyle;
-            fileHeader.Font.Bold = true;
-            fileHeader.Fill.BackgroundColor = XLColor.LightGray;
-
-            var columnHeader = XLWorkbook.DefaultStyle;
-            columnHeader.Font.Bold = true;
-
-            var noUsers = XLWorkbook.DefaultStyle;
-            noUsers.Font.Italic = true;
-
-            var errorsHeader = XLWorkbook.DefaultStyle;
-            errorsHeader.Font.Bold = true;
-            errorsHeader.Font.FontColor = XLColor.Red;
-
-            var errorRow = XLWorkbook.DefaultStyle;
-            errorRow.Font.FontColor = XLColor.Red;
-
-            return new SpreadsheetStyles(fileHeader, columnHeader, noUsers, errorsHeader, errorRow);
+            // Strip the share prefix and any leading separator, leaving everything below the
+            // share — including any intermediate folders between the share and the filename.
+            relativePath = normalizedPath[result.Share.Length..].TrimStart('\\');
         }
+        else
+        {
+            // Path was too shallow for the configured share segment index — no share to strip.
+            // Show the full path so the file is still identifiable.
+            relativePath = normalizedPath;
+        }
+
+        return result.FileId.HasValue
+            ? $"{relativePath} (ID {result.FileId})"
+            : relativePath;
     }
 }

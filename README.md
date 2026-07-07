@@ -23,9 +23,13 @@ Working Papers) are touched the minimum number of times regardless of batch size
    at all.
 4. **Map and emit.** Identifiers are mapped to staff in memory, the configured Active Directory
    support-team membership is loaded **once** (the result is cached for the whole run), and support
-   users are removed from each file's list. A single spreadsheet is then written, grouped by file,
-   listing each retained user's **full name**, **office**, and **position**, along with any errors
-   encountered.
+   users are removed from each file's list. A single spreadsheet is then written as an Excel Table
+   (autofilter, frozen header, banded rows) with columns **Share**, **File**, **Full Name**,
+   **Office**, **Position**, and **Errors** — one row per (file × user), plus one row per file-level
+   error, plus a placeholder row for files with no users. **Share** holds the share prefix of the
+   UNC path (for example, `\\server\volume\share`) and **File** holds everything below it, so the
+   full path is `Share + "\" + File` for any input depth. The split point is configured by
+   `Output:ShareSegmentIndex`.
 
 The spreadsheet preserves input order even when Phase 2 is parallel. Processing is resilient: if a
 file fails, its error is recorded and the remaining files still run; if an individual user cannot be
@@ -159,6 +163,7 @@ also fails fast with a clean message and no stack trace.
 | `ActiveDirectory`   | `CaseWareSupportTeamGroupName`        | AD group whose members are removed from the results.                 |
 | `Workspace`         | `RootPath`                            | Root for per-file workspaces (defaults to the OS temp folder).       |
 | `Output`            | `Directory` / `FilePath`              | Default output location (see [Usage](#usage)).                       |
+| `Output`            | `ShareSegmentIndex`                   | Depth of the share prefix in the UNC path (default `3` — the first subfolder under the SMB share for paths of the form `\\server\smb-share\share\engagement\file.ac_`). The `Share` column holds the first N segments (e.g. `\\server\volume\share`); the `File` column holds everything below the prefix, so `Share + "\" + File` reconstructs the full UNC path for any depth. Paths shallower than the configured index produce an empty `Share` and the full path in `File`. |
 | `Input`             | `FilePath`                            | Path to a text file with one input per line; used when `--input-files` is not supplied. |
 | `Input`             | `Files`                               | Inline fallback inputs when neither `--input-files` nor `Input:FilePath` is supplied. |
 | `ApplicationLogging`| —                                     | Serilog output templates, log levels, Application Insights, and the rolling file sink. |

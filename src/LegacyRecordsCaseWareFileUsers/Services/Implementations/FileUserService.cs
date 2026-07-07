@@ -518,7 +518,8 @@ internal class FileUserService : IFileUserService
 
     private FileUserResult BuildResult(FileWorkItem workItem, ILookup<string, Staff> staffByIdentifier)
     {
-        var result = new FileUserResult(workItem.DisplayName, workItem.Input.FileId, workItem.UncPath);
+        var share = UncShareExtractor.Extract(workItem.UncPath, this.options.Output.ShareSegmentIndex);
+        var result = new FileUserResult(workItem.DisplayName, workItem.Input.FileId, workItem.UncPath, share);
 
         foreach (var error in workItem.Errors)
         {
