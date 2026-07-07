@@ -36,13 +36,20 @@ public class RunJournalTests
     }
 
     [Fact]
-    public async Task LoadForResume_WhenJournalMissing_ReturnsEmpty()
+    public async Task LoadForResume_WhenJournalMissing_ReturnsEmptyAndCreatesTheFile()
     {
+        // Eager file creation is the fix for the "run crashed before any file completed Phase 1"
+        // scenario: a subsequent --resume against this RunID must find a valid (empty) journal,
+        // not fail loudly on missing-journal validation. Symmetric with how Serilog opens the log
+        // file eagerly at run startup.
         await RunWithTempDirectoryAsync(async (directory, journal) =>
         {
+            File.Exists(journal.JournalPath).ShouldBeFalse();
+
             var loaded = await journal.LoadForResumeAsync(TestContext.Current.CancellationToken);
 
             loaded.ShouldBeEmpty();
+            File.Exists(journal.JournalPath).ShouldBeTrue();
         });
     }
 

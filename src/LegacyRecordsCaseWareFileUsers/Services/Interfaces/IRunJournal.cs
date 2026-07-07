@@ -29,6 +29,12 @@ public interface IRunJournal
     ///     Reads every entry from the journal file, honoring last-wins deduplication by
     ///     <see cref="JournalEntry.NormalizedKey" />. A partial trailing line (typical crash
     ///     artifact) is logged and skipped so the earlier well-formed entries are still usable.
+    ///     <para>
+    ///         Also ensures the journal file exists on disk before returning — creates an empty
+    ///         file if none is present. This means every run has a journal from the moment Phase 0
+    ///         begins, so a subsequent <c>--resume</c> against this RunID finds a valid journal
+    ///         even if the run crashed before any file completed Phase 1.
+    ///     </para>
     /// </summary>
     /// <param name="cancellationToken">Token to observe for cancellation.</param>
     /// <returns>Entries keyed by <see cref="JournalEntry.NormalizedKey" />.</returns>

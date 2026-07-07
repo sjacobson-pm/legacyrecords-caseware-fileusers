@@ -68,8 +68,28 @@ internal sealed class RunJournal : IRunJournal, IDisposable
     {
         var result = new Dictionary<string, JournalEntry>(StringComparer.Ordinal);
 
+        // Ensure the directory and file exist before we return. Creating an empty journal eagerly
+        // — even on fresh runs with no resume state to load — means every RunID has a journal on
+        // disk from the start of Phase 0, so a subsequent --resume against this RunID succeeds
+        // even if the current run crashes before any file completes Phase 1. Symmetric with the
+        // log file, which Serilog opens eagerly at startup.
+        var directory = Path.GetDirectoryName(this.JournalPath);
+
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
         if (!File.Exists(this.JournalPath))
         {
+            // Create an empty file, then close the handle so subsequent appends can open in
+            // FileMode.Append mode without conflict.
+            using (File.Create(this.JournalPath))
+            {
+            }
+
+            this.logger.LogDebug("Initialized empty journal at {JournalPath}.", this.JournalPath);
+
             return result;
         }
 
