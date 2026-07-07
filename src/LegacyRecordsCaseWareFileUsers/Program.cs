@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
@@ -478,8 +479,8 @@ internal class Program
         // wind down once each worker's current file finishes or throws. Log an immediate warning
         // in the Ctrl+C handler itself so the user knows their keypress was received while the
         // wind-down is in progress. The Warning level also triggers the blank-line separator, so
-        // it stands out in the log. A second Ctrl+C is allowed to fall through to the default
-        // termination behavior — an escape hatch if the graceful shutdown itself hangs.
+        // it stands out in the log. A second Ctrl+C escalates to an OS-level termination — the
+        // escape hatch when the graceful shutdown itself is stuck on a native call.
         var cancellationAcknowledged = 0;
         void CancelKeyPressHandler(object? sender, ConsoleCancelEventArgs eventArgs)
         {
@@ -498,10 +499,23 @@ internal class Program
             }
             else
             {
-                // second (or subsequent) Ctrl+C — do not set Cancel=true, let the OS terminate
-                // the process. The journal on disk still holds every file that reached Phase 1's
-                // finally block prior to the abort.
-                log.Warning("Second cancellation requested — aborting immediately without waiting for in-flight file(s).");
+                // Second (or subsequent) Ctrl+C: the graceful shutdown is stuck (typically on an
+                // in-flight CaseWare COM call that the CLR can't interrupt). Take Cancel=true so
+                // the runtime's default handler cannot try to shut down politely — that path
+                // waits for foreground threads and finalizers, which is exactly the hang the user
+                // is trying to escape — and then terminate at the OS level via TerminateProcess.
+                //
+                // The journal is flushed to disk on every per-file append, so processing state
+                // is preserved verbatim; a subsequent --resume against this RunID picks up right
+                // where the abort landed. Console output is written synchronously by the sink so
+                // the "aborting immediately" line reaches the terminal before we die. The file
+                // log may miss the very last line if its buffer hasn't been flushed, which is an
+                // acceptable trade for guaranteed prompt termination.
+                eventArgs.Cancel = true;
+
+                log.Warning("Second cancellation requested — aborting immediately.");
+
+                Process.GetCurrentProcess().Kill();
             }
         }
 
