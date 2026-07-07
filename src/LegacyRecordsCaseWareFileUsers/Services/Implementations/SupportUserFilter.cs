@@ -14,14 +14,21 @@ namespace LegacyRecordsCaseWareFileUsers.Services.Implementations;
 /// <summary>
 ///     Removes staff that belong to the configured CaseWare support team Active Directory group. The
 ///     AD lookup is performed lazily on the first call to <see cref="RemoveSupportUsers" /> and the
-///     resulting membership list is cached for the lifetime of the instance, so the filter can be
+///     resulting membership set is cached for the lifetime of the instance, so the filter can be
 ///     reused across many files without re-querying AD.
+///     <para>
+///         The membership set is held as a <see cref="HashSet{T}" /> with a case-insensitive
+///         comparer, so each per-file <see cref="RemoveSupportUsers" /> call is O(staffPerFile)
+///         with O(1) support-team lookups — much cheaper than the earlier
+///         O(supportTeamSize × staffPerFile) nested-loop check for large support teams or files
+///         with many users.
+///     </para>
 /// </summary>
 internal class SupportUserFilter : ISupportUserFilter
 {
     private readonly ConfigurationOptions options;
     private readonly ILogger<SupportUserFilter> logger;
-    private readonly Lazy<IReadOnlyCollection<string>> supportTeamUserPrincipalNames;
+    private readonly Lazy<HashSet<string>> supportTeamUserPrincipalNames;
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="SupportUserFilter" /> class.
@@ -38,7 +45,7 @@ internal class SupportUserFilter : ISupportUserFilter
 
         // ExecutionAndPublication (the default) makes the lazy thread-safe and guarantees the
         // initialization function runs at most once even when callers race on the first access
-        this.supportTeamUserPrincipalNames = new Lazy<IReadOnlyCollection<string>>(this.LoadSupportTeamUserPrincipalNames);
+        this.supportTeamUserPrincipalNames = new Lazy<HashSet<string>>(this.LoadSupportTeamUserPrincipalNames);
     }
 
     /// <inheritdoc />
@@ -46,29 +53,31 @@ internal class SupportUserFilter : ISupportUserFilter
     {
         ArgumentNullException.ThrowIfNull(staff);
 
-        var supportUserPrincipalNames = this.supportTeamUserPrincipalNames.Value;
+        var supportSet = this.supportTeamUserPrincipalNames.Value;
 
-        if (supportUserPrincipalNames.Count == 0)
+        if (supportSet.Count == 0)
         {
             // either the AD lookup failed (already logged) or the support team is empty; nothing to
             // remove
             return staff;
         }
 
-        foreach (var userPrincipalName in supportUserPrincipalNames)
-        {
-            var supportStaff = staff.SingleOrDefault(o => string.Equals(
-                o.UserPrincipalName,
-                userPrincipalName,
-                StringComparison.InvariantCultureIgnoreCase));
+        // Single pass over the file's staff with an O(1) hash lookup per member. Filters into a
+        // fresh list rather than mutating the input, which keeps this method's return contract
+        // predictable regardless of what the caller does with the original collection afterwards.
+        var filtered = new List<Staff>(staff.Count);
 
-            if (supportStaff != null)
+        foreach (var member in staff)
+        {
+            if (member.UserPrincipalName != null && supportSet.Contains(member.UserPrincipalName))
             {
-                staff.Remove(supportStaff);
+                continue;
             }
+
+            filtered.Add(member);
         }
 
-        return staff;
+        return filtered;
     }
 
     /// <summary>
@@ -96,11 +105,16 @@ internal class SupportUserFilter : ISupportUserFilter
                              .ToList();
     }
 
-    private IReadOnlyCollection<string> LoadSupportTeamUserPrincipalNames()
+    private HashSet<string> LoadSupportTeamUserPrincipalNames()
     {
         this.logger.LogInformation(
             "Loading members of the {GroupName} Active Directory group...",
             this.options.ActiveDirectory.CaseWareSupportTeamGroupName);
+
+        // InvariantCultureIgnoreCase matches the case-insensitive comparison the previous
+        // SingleOrDefault predicate performed. GetSupportTeamUserPrincipalNames already lowercases
+        // each entry, so the case-fold applies consistently on both sides of the Contains check.
+        var comparer = StringComparer.InvariantCultureIgnoreCase;
 
         try
         {
@@ -111,7 +125,7 @@ internal class SupportUserFilter : ISupportUserFilter
                 members.Count,
                 this.options.ActiveDirectory.CaseWareSupportTeamGroupName);
 
-            return [..members];
+            return new HashSet<string>(members, comparer);
         }
         catch (Exception ex)
         {
@@ -122,7 +136,7 @@ internal class SupportUserFilter : ISupportUserFilter
                 "An error occurred getting the members of the {GroupName} AD group; no support users will be removed.",
                 this.options.ActiveDirectory.CaseWareSupportTeamGroupName);
 
-            return [];
+            return new HashSet<string>(comparer);
         }
     }
 }
