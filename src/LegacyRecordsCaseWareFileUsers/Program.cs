@@ -15,7 +15,6 @@ using LegacyRecordsCaseWareFileUsers.Logging;
 using LegacyRecordsCaseWareFileUsers.Options;
 using LegacyRecordsCaseWareFileUsers.Services.Interfaces;
 using Microsoft.ApplicationInsights.Extensibility;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -23,6 +22,7 @@ using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using Serilog;
 using Serilog.Context;
+using Serilog.Formatting.Display;
 using ILogger = Serilog.ILogger;
 
 [assembly: InternalsVisibleTo("LegacyRecordsCaseWareFileUsers.Tests")]
@@ -109,16 +109,27 @@ internal class Program
             exitCode = -1;
         }
 
-        log.Information("Exiting {ApplicationTitle} with exit code {ExitCode}...", Constants.ApplicationTitle, exitCode);
-        await Log.CloseAndFlushAsync();
+        // Exit phase — no elapsed timer (the "how long did the run take" answer is aggregated across
+        // the work phases, not the exit banner). Wrap the "Exiting..." line and the "Press any key"
+        // prompt so both appear under the same visual bracket.
+        PhaseScope.Run(
+            "Exit",
+            () =>
+            {
+                log.Information("Exiting {ApplicationTitle} with exit code {ExitCode}...", Constants.ApplicationTitle, exitCode);
+                WaitForExitKeyPress();
+            },
+            showElapsed: false);
 
-        WaitForExitKeyPress();
+        await Log.CloseAndFlushAsync();
 
         Environment.Exit(exitCode);
     }
 
     /// <summary>
     ///     Pauses before exit so output remains visible when the program is run interactively.
+    ///     Emits the prompt as a normal log line so the file log captures it alongside the exit
+    ///     banner; skipped when input is redirected (non-interactive / CI runs).
     /// </summary>
     private static void WaitForExitKeyPress()
     {
@@ -127,7 +138,7 @@ internal class Program
             return;
         }
 
-        Console.WriteLine("Press any key to exit...");
+        log.Information("Press any key to exit...");
         Console.ReadKey(true);
     }
 
@@ -216,6 +227,13 @@ internal class Program
     {
         var loggerConfiguration = new LoggerConfiguration();
 
+        // Debug and file sinks render through LevelSeparatedFormatter (formatter wrapping) so
+        // Warning+ events are surrounded by blank lines. The console sink uses LevelSeparatedConsoleSink
+        // (sink wrapping) instead — that approach preserves Serilog's built-in console theme colors,
+        // which the formatter-wrapping approach would otherwise lose. Application Insights is not
+        // wrapped either way — blank lines have no meaning in structured telemetry.
+        var debugFormatter = new LevelSeparatedFormatter(new MessageTemplateTextFormatter(configOptions.Logging.DebugOutputTemplate));
+
         loggerConfiguration.MinimumLevel.ControlledBy(LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.Default))
                            .MinimumLevel.Override("Microsoft", LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.Microsoft))
                            .MinimumLevel.Override("System", LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.System))
@@ -225,10 +243,10 @@ internal class Program
                            .Enrich.WithProperty(LogContextProperties.EngineInstance, EngineInstanceId)
                            .Enrich.WithProperty(LogContextProperties.RunId, runId)
                            .WriteTo.Debug(
-                                outputTemplate: configOptions.Logging.DebugOutputTemplate,
+                                formatter: debugFormatter,
                                 levelSwitch: LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.Debug))
-                           .WriteTo.Console(
-                                outputTemplate: configOptions.Logging.ConsoleOutputTemplate,
+                           .WriteTo.Sink(
+                                new LevelSeparatedConsoleSink(configOptions.Logging.ConsoleOutputTemplate),
                                 levelSwitch: LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.Console));
 
         ConfigureFileLogging(loggerConfiguration);
@@ -271,14 +289,17 @@ internal class Program
                 // explicit config → honor it. Bare filenames land in the output directory; rooted
                 // or directory-prefixed paths are honored verbatim (see ResolveFileLogPath).
                 resolvedPath = ResolveFileLogPath(fileOptions.Path);
+
                 rollingInterval = Enum.TryParse<RollingInterval>(fileOptions.RollingInterval, ignoreCase: true, out var parsed)
                     ? parsed
                     : RollingInterval.Day;
             }
 
+            var fileFormatter = new LevelSeparatedFormatter(new MessageTemplateTextFormatter(outputTemplate));
+
             loggerConfiguration.WriteTo.File(
+                formatter: fileFormatter,
                 path: resolvedPath,
-                outputTemplate: outputTemplate,
                 rollingInterval: rollingInterval,
                 retainedFileCountLimit: fileOptions.RetainedFileCountLimit,
                 levelSwitch: LoggingHelper.GetLoggingLevelSwitch(configOptions.Logging.LogLevel.File));
@@ -406,18 +427,28 @@ internal class Program
         {
             var serviceProvider = services.BuildServiceProvider();
 
-            // no generic host is present to run ValidateOnStart automatically, so trigger the
-            // registered configuration validation explicitly before doing any work
-            serviceProvider.GetRequiredService<IStartupValidator>().Validate();
+            // Configuration phase — validate registered options and log warnings for any optional
+            // configuration that is not populated. Options validation happens explicitly because
+            // there is no generic host present to run ValidateOnStart automatically.
+            PhaseScope.Run(
+                "Configuration",
+                () =>
+                {
+                    serviceProvider.GetRequiredService<IStartupValidator>().Validate();
+                    LogOptionalConfigurationWarnings();
+                });
 
-            LogOptionalConfigurationWarnings();
+            // Database connectivity phase — verify the CaseWare File Management database is reachable
+            // before any per-file work begins so a misconfigured connection string fails fast with a
+            // clean message instead of crashing partway through a run.
+            var databaseReachable = await PhaseScope.RunAsync(
+                "Database connectivity",
+                () => ProbeDatabaseConnectivityAsync(serviceProvider, cancellationTokenSource.Token)).ConfigureAwait(false);
 
-            // verify database connectivity before any work begins so a misconfigured connection
-            // string (for example, a self-signed certificate that needs TrustServerCertificate=True)
-            // fails fast with a clean message instead of crashing partway through a run
-            if (!await ProbeDatabaseConnectivityAsync(serviceProvider, cancellationTokenSource.Token).ConfigureAwait(false))
+            if (!databaseReachable)
             {
                 exitCode = -1;
+
                 return;
             }
 

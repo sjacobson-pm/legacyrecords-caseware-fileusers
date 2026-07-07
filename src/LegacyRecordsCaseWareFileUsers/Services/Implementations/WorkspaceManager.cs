@@ -146,14 +146,15 @@ internal class WorkspaceManager : IWorkspaceManager
         // retry transient lock errors (IO/sharing violations, access denied) on the assumption that
         // an external process is holding the file briefly; exponential backoff so a longer-held
         // lock has a chance to release before we give up
-        return new ResiliencePipelineBuilder()
-            .AddRetry(new RetryStrategyOptions
-            {
-                ShouldHandle = new PredicateBuilder().Handle<IOException>().Handle<UnauthorizedAccessException>(),
-                MaxRetryAttempts = 3,
-                Delay = TimeSpan.FromMilliseconds(500),
-                BackoffType = DelayBackoffType.Exponential,
-            })
-            .Build();
+        return new ResiliencePipelineBuilder().AddRetry(
+                                                   new RetryStrategyOptions
+                                                   {
+                                                       ShouldHandle = new PredicateBuilder().Handle<IOException>()
+                                                                                            .Handle<UnauthorizedAccessException>(),
+                                                       MaxRetryAttempts = 3,
+                                                       Delay = TimeSpan.FromMilliseconds(500),
+                                                       BackoffType = DelayBackoffType.Exponential,
+                                                   })
+                                              .Build();
     }
 }

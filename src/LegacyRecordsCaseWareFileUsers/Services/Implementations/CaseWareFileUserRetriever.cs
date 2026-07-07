@@ -92,23 +92,24 @@ internal class CaseWareFileUserRetriever : ICaseWareFileUserRetriever
         }
 
         return new ResiliencePipelineBuilder()
-            .AddRetry(new RetryStrategyOptions
-            {
-                ShouldHandle = new PredicateBuilder().Handle<Exception>(),
-                MaxRetryAttempts = maxRetryAttempts,
-                Delay = RetryDelay,
-                BackoffType = DelayBackoffType.Constant,
-                OnRetry = args =>
-                {
-                    this.logger.LogDebug(
-                        "Retrying FILE security group retrieval after a transient failure (retry {RetryAttempt}): {Error}",
-                        args.AttemptNumber + 1,
-                        args.Outcome.Exception?.Message);
+              .AddRetry(
+                   new RetryStrategyOptions
+                   {
+                       ShouldHandle = new PredicateBuilder().Handle<Exception>(),
+                       MaxRetryAttempts = maxRetryAttempts,
+                       Delay = RetryDelay,
+                       BackoffType = DelayBackoffType.Constant,
+                       OnRetry = args =>
+                       {
+                           this.logger.LogDebug(
+                               "Retrying FILE security group retrieval after a transient failure (retry {RetryAttempt}): {Error}",
+                               args.AttemptNumber + 1,
+                               args.Outcome.Exception?.Message);
 
-                    return default;
-                },
-            })
-            .Build();
+                           return default;
+                       },
+                   })
+              .Build();
     }
 
     private void RunWithCaseWareClient(Action<CWClient> code, string caseWareFilePath, string fileLabel)

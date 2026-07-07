@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using LegacyRecordsCaseWareFileUsers.Data.Domain;
 using LegacyRecordsCaseWareFileUsers.Data.Repositories;
 using LegacyRecordsCaseWareFileUsers.Helpers;
+using LegacyRecordsCaseWareFileUsers.Logging;
 using LegacyRecordsCaseWareFileUsers.Models;
 using LegacyRecordsCaseWareFileUsers.Options;
 using LegacyRecordsCaseWareFileUsers.Services.Interfaces;
@@ -90,44 +91,66 @@ internal class FileUserService : IFileUserService
     /// <inheritdoc />
     public async Task RunAsync(string? inputFilesPath, string? outputPath, CancellationToken cancellationToken = default)
     {
-        var items = this.inputReader.ReadInputs(inputFilesPath);
+        // Input parsing — read and classify the input list (file IDs vs. UNC paths)
+        var items = PhaseScope.Run(
+            "Input parsing",
+            () =>
+            {
+                var parsed = this.inputReader.ReadInputs(inputFilesPath);
 
-        if (items.Count == 0)
-        {
-            this.logger.LogWarning("No inputs were supplied; an empty spreadsheet will be produced.");
-        }
+                if (parsed.Count == 0)
+                {
+                    this.logger.LogWarning("No inputs were supplied; an empty spreadsheet will be produced.");
+                }
+
+                return parsed;
+            });
 
         // Phase 0 — bounded query for the file-ID inputs and build the per-input work items
-        var workItems = await this.BuildWorkItemsAsync(items, cancellationToken).ConfigureAwait(false);
+        var workItems = await PhaseScope.RunAsync(
+            "Phase 0 — Resolve file IDs",
+            () => this.BuildWorkItemsAsync(items, cancellationToken)).ConfigureAwait(false);
 
-        this.workspaceManager.PrepareWorkspaceRoot();
+        // Phase 1 — parallel CaseWare reads (no database, bounded by MaxDegreeOfParallelism)
+        await PhaseScope.RunAsync(
+            "Phase 1 — CaseWare identifier reads",
+            async () =>
+            {
+                this.workspaceManager.PrepareWorkspaceRoot();
 
-        try
-        {
-            // Phase 1 — parallel CaseWare reads (no database, bounded by MaxDegreeOfParallelism)
-            await this.ReadCaseWareIdentifiersAsync(workItems, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            this.workspaceManager.CleanUpWorkspaceRoot();
-        }
+                try
+                {
+                    await this.ReadCaseWareIdentifiersAsync(workItems, cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    this.workspaceManager.CleanUpWorkspaceRoot();
+                }
+            }).ConfigureAwait(false);
 
         // Phase 2 — one bounded staff query against the identifiers actually seen across Phase 1
-        var staffByIdentifier = await this.LoadStaffAsync(workItems, cancellationToken).ConfigureAwait(false);
+        var staffByIdentifier = await PhaseScope.RunAsync(
+            "Phase 2 — Resolve staff",
+            () => this.LoadStaffAsync(workItems, cancellationToken)).ConfigureAwait(false);
 
-        // Phase 3 — in-memory mapping; no IO so this stays sequential
-        var results = workItems.Select(workItem => this.BuildResult(workItem, staffByIdentifier)).ToArray();
+        // Phase 3 — in-memory mapping (no IO so this stays sequential) + spreadsheet emit
+        await PhaseScope.RunAsync(
+            "Phase 3 — Map, filter, and emit",
+            () =>
+            {
+                var results = workItems.Select(workItem => this.BuildResult(workItem, staffByIdentifier)).ToArray();
 
-        var resolvedOutputPath = this.ResolveOutputPath(outputPath);
+                var resolvedOutputPath = this.ResolveOutputPath(outputPath);
 
-        this.spreadsheetWriter.Write(results, resolvedOutputPath);
+                this.spreadsheetWriter.Write(results, resolvedOutputPath);
 
-        this.logger.LogInformation("Processed {FileCount} file(s); spreadsheet written to {OutputPath}.", results.Length, resolvedOutputPath);
+                this.logger.LogInformation("Processed {FileCount} file(s); spreadsheet written to {OutputPath}.", results.Length, resolvedOutputPath);
+
+                return Task.CompletedTask;
+            }).ConfigureAwait(false);
     }
 
-    private async Task<List<FileWorkItem>> BuildWorkItemsAsync(
-        IReadOnlyList<FileInputItem> items,
-        CancellationToken cancellationToken)
+    private async Task<List<FileWorkItem>> BuildWorkItemsAsync(IReadOnlyList<FileInputItem> items, CancellationToken cancellationToken)
     {
         var fileIds = items.Where(o => o.IsFileId).Select(o => o.FileId!.Value).Distinct().ToList();
 
@@ -204,12 +227,8 @@ internal class FileUserService : IFileUserService
         // to hide the copy latency behind CaseWare work without unbounded prefetch.
         var channelCapacity = Math.Max(caseWareDop * 2, 1);
 
-        var channel = Channel.CreateBounded<StagedFile>(new BoundedChannelOptions(channelCapacity)
-        {
-            FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = false,
-            SingleWriter = false,
-        });
+        var channel = Channel.CreateBounded<StagedFile>(
+            new BoundedChannelOptions(channelCapacity) { FullMode = BoundedChannelFullMode.Wait, SingleReader = false, SingleWriter = false, });
 
         this.logger.LogInformation(
             "Phase 1 pipeline: copy DOP {CopyDop}, CaseWare DOP {CaseWareDop}, channel capacity {Capacity}, {ItemCount} file(s) to process.",
@@ -242,16 +261,13 @@ internal class FileUserService : IFileUserService
         int copyDop,
         CancellationToken cancellationToken)
     {
-        var parallelOptions = new ParallelOptions
-        {
-            MaxDegreeOfParallelism = copyDop,
-            CancellationToken = cancellationToken,
-        };
+        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = copyDop, CancellationToken = cancellationToken, };
 
         await Parallel.ForEachAsync(
-            itemsToProcess,
-            parallelOptions,
-            async (workItem, token) => await this.StageFileAsync(workItem, writer, token).ConfigureAwait(false)).ConfigureAwait(false);
+                           itemsToProcess,
+                           parallelOptions,
+                           async (workItem, token) => await this.StageFileAsync(workItem, writer, token).ConfigureAwait(false))
+                      .ConfigureAwait(false);
     }
 
     private async Task StageFileAsync(FileWorkItem workItem, ChannelWriter<StagedFile> writer, CancellationToken cancellationToken)
@@ -297,22 +313,19 @@ internal class FileUserService : IFileUserService
 
     private async Task ConsumeStagedFilesAsync(ChannelReader<StagedFile> reader, int caseWareDop, CancellationToken cancellationToken)
     {
-        var parallelOptions = new ParallelOptions
-        {
-            MaxDegreeOfParallelism = caseWareDop,
-            CancellationToken = cancellationToken,
-        };
+        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = caseWareDop, CancellationToken = cancellationToken, };
 
         await Parallel.ForEachAsync(
-            reader.ReadAllAsync(cancellationToken),
-            parallelOptions,
-            (stagedFile, token) =>
-            {
-                token.ThrowIfCancellationRequested();
-                this.ProcessStagedFile(stagedFile);
+                           reader.ReadAllAsync(cancellationToken),
+                           parallelOptions,
+                           (stagedFile, token) =>
+                           {
+                               token.ThrowIfCancellationRequested();
+                               this.ProcessStagedFile(stagedFile);
 
-                return ValueTask.CompletedTask;
-            }).ConfigureAwait(false);
+                               return ValueTask.CompletedTask;
+                           })
+                      .ConfigureAwait(false);
     }
 
     private void ProcessStagedFile(StagedFile stagedFile)
@@ -348,23 +361,18 @@ internal class FileUserService : IFileUserService
         }
     }
 
-    private async Task<ILookup<string, Staff>> LoadStaffAsync(
-        IReadOnlyList<FileWorkItem> workItems,
-        CancellationToken cancellationToken)
+    private async Task<ILookup<string, Staff>> LoadStaffAsync(IReadOnlyList<FileWorkItem> workItems, CancellationToken cancellationToken)
     {
-        var uniqueIdentifiers = workItems
-            .Where(workItem => workItem.UserIdentifiers != null)
-            .SelectMany(workItem => workItem.UserIdentifiers!)
-            .Distinct(StringComparer.InvariantCultureIgnoreCase)
-            .ToList();
+        var uniqueIdentifiers = workItems.Where(workItem => workItem.UserIdentifiers != null)
+                                         .SelectMany(workItem => workItem.UserIdentifiers!)
+                                         .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                                         .ToList();
 
         if (uniqueIdentifiers.Count == 0)
         {
-            this.logger.LogInformation(
-                "No CaseWare users were found across the run; the staff database will not be queried.");
+            this.logger.LogInformation("No CaseWare users were found across the run; the staff database will not be queried.");
 
-            return Enumerable.Empty<Staff>()
-                             .ToLookup(staff => staff.CaseWareUserIdentifier, StringComparer.InvariantCultureIgnoreCase);
+            return Enumerable.Empty<Staff>().ToLookup(staff => staff.CaseWareUserIdentifier, StringComparer.InvariantCultureIgnoreCase);
         }
 
         // single short-lived scope just for the bounded staff query
