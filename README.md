@@ -182,20 +182,26 @@ continues without removing support users.
 
 ```text
 src/LegacyRecordsCaseWareFileUsers/
-├── Program.cs                 # composition root, configuration, logging, CLI
-├── CommandLineOptions/        # command line option definitions
+├── Program.cs                 # composition root, configuration, logging, CLI, RunID selection
+├── Constants.cs               # app-wide constants (FILE group name, application title, execution modes)
+├── CommandLineOptions/        # command line option definitions (input-files, output, resume)
 ├── Services/
 │   ├── Interfaces/            # service abstractions
-│   └── Implementations/       # input reading, workspace, CaseWare retrieval,
-│                              #   staff mapping, support-user filtering, output
+│   └── Implementations/       # FileUserService phase orchestrator, input reading, workspace,
+│                              #   CaseWare retrieval, support-user filtering, spreadsheet output,
+│                              #   RunContext (shared RunID) and RunJournal (resume durability)
 ├── Data/
 │   ├── Contexts/              # EF Core DbContext for the file-management database
 │   ├── Repositories/          # CaseWare-files and staff repositories
-│   └── Domain/                # database entities
-├── Models/                    # input/result models
-├── Options/                   # strongly-typed configuration
-├── Helpers/, Logging/, Exceptions/
-test/unit-tests/               # xUnit test project
+│   └── Domain/                # database entities (CaseWareFileForApplications, Staff)
+├── Models/                    # input/result models (FileInputItem, FileUserResult,
+│                              #   ReportedUser, JournalEntry)
+├── Options/                   # strongly-typed configuration bindings
+├── Helpers/                   # RunID generation + word lists, UNC share extraction, log-path
+│                              #   formatting, DI registration extensions
+├── Logging/                   # Serilog phase scopes and level-separated console/file sinks
+├── Exceptions/                # CaseWare retrieval exception
+test/unit-tests/               # xUnit test project (Helpers, Logging, Options, Services)
 ```
 
 ## Building and testing
