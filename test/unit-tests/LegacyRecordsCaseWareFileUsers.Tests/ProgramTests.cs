@@ -13,7 +13,7 @@ public class ProgramTests
     [Fact]
     public async Task TryRunParsedCommandAsync_InvalidResume_SkipsDelegateAndSetsExitCode()
     {
-        var outputDirectory = Path.Combine(Path.GetTempPath(), $"legacyrecords-{Guid.NewGuid():N}");
+        var outputDirectory = Path.Join(Path.GetTempPath(), $"legacyrecords-{Guid.NewGuid():N}");
         Directory.CreateDirectory(outputDirectory);
 
         var logger = new LoggerConfiguration().CreateLogger();
