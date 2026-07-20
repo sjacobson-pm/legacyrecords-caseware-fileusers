@@ -371,6 +371,30 @@ public class FileUserServiceTests
     }
 
     [Fact]
+    public async Task RunAsync_WhenConsumerSideFaults_CancelsPipelineAndThrowsWithoutHanging()
+    {
+        // Arrange: enough files to exercise bounded-channel backpressure while the consumer side
+        // fails in AppendJournalEntryAsync.
+        this.GivenInputs(
+            new FileInputItem(@"\\srv\a.ac_", null, @"\\srv\a.ac_"),
+            new FileInputItem(@"\\srv\b.ac_", null, @"\\srv\b.ac_"),
+            new FileInputItem(@"\\srv\c.ac_", null, @"\\srv\c.ac_"),
+            new FileInputItem(@"\\srv\d.ac_", null, @"\\srv\d.ac_"),
+            new FileInputItem(@"\\srv\e.ac_", null, @"\\srv\e.ac_"));
+
+        this.retriever.GetFileSecurityGroupUserIdentifiers(Arg.Any<string>()).Returns(new List<string>());
+        this.runJournal.AppendAsync(Arg.Any<JournalEntry>(), Arg.Any<CancellationToken>())
+            .Returns<Task>(_ => throw new InvalidOperationException("journal boom"));
+
+        var sut = this.CreateSut(maxDegreeOfParallelism: 1);
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        // Act / Assert
+        var ex = await Should.ThrowAsync<InvalidOperationException>(() => sut.RunAsync(null, null, timeoutCts.Token));
+        ex.Message.ShouldContain("journal boom");
+    }
+
+    [Fact]
     public async Task RunAsync_ProcessesFilesConcurrently_UpToTheConfiguredDegree()
     {
         // Arrange

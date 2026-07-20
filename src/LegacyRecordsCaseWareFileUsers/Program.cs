@@ -84,16 +84,11 @@ internal class Program
                 runId,
                 JsonConvert.SerializeObject(args));
 
-            if (isResuming && !ValidateResumeJournal(runId, effectiveOutputDirectory))
-            {
-                // ValidateResumeJournal already logged the clean failure message and set exitCode.
-                // Skip the work by not entering MapResult; the exit sequence below runs normally.
-                return;
-            }
-
-            await parseResult.MapResult(
-                async options => await ProduceFileUserListAsync(options),
-                async errors => await HandleCommandLineParsingErrorsAsync(args, errors));
+            await TryRunParsedCommandAsync(
+                isResuming,
+                () => parseResult.MapResult(
+                    async options => await ProduceFileUserListAsync(options),
+                    async errors => await HandleCommandLineParsingErrorsAsync(args, errors)));
         }
         catch (OperationCanceledException)
         {
@@ -141,6 +136,29 @@ internal class Program
         await Log.CloseAndFlushAsync();
 
         Environment.Exit(exitCode);
+    }
+
+    /// <summary>
+    ///     Executes the parsed command branch unless resume validation fails. Returns
+    ///     <c>false</c> when resume validation blocks command execution.
+    /// </summary>
+    /// <param name="isResuming">Whether the run requested <c>--resume</c>.</param>
+    /// <param name="runParsedCommandAsync">Delegate that executes the parser's command branch.</param>
+    /// <returns><c>true</c> when command execution ran; <c>false</c> when resume validation blocked it.</returns>
+    private static async Task<bool> TryRunParsedCommandAsync(bool isResuming, Func<Task> runParsedCommandAsync)
+    {
+        ArgumentNullException.ThrowIfNull(runParsedCommandAsync);
+
+        if (isResuming && !ValidateResumeJournal(runId, effectiveOutputDirectory))
+        {
+            // ValidateResumeJournal already logged the clean failure message and set exitCode.
+            // Skip command execution while still allowing the shared exit/log-flush path to run.
+            return false;
+        }
+
+        await runParsedCommandAsync().ConfigureAwait(false);
+
+        return true;
     }
 
     /// <summary>
