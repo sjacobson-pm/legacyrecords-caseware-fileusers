@@ -16,7 +16,7 @@ public class ProgramTests
         var outputDirectory = Path.Join(Path.GetTempPath(), $"legacyrecords-{Guid.NewGuid():N}");
         Directory.CreateDirectory(outputDirectory);
 
-        var logger = new LoggerConfiguration().CreateLogger();
+        using var logger = new LoggerConfiguration().CreateLogger();
         var originalRunId = GetPrivateStaticField<string>("runId");
         var originalOutputDirectory = GetPrivateStaticField<string>("effectiveOutputDirectory");
         var originalLog = GetPrivateStaticField<Serilog.ILogger>("log");
@@ -48,7 +48,6 @@ public class ProgramTests
             SetPrivateStaticField("effectiveOutputDirectory", originalOutputDirectory);
             SetPrivateStaticField("log", originalLog);
             SetPrivateStaticField("exitCode", originalExitCode);
-            logger.Dispose();
             Directory.Delete(outputDirectory, recursive: true);
         }
     }
@@ -60,7 +59,7 @@ public class ProgramTests
         var originalOutputDirectory = GetPrivateStaticField<string>("effectiveOutputDirectory");
         var originalLog = GetPrivateStaticField<Serilog.ILogger>("log");
         var originalExitCode = GetPrivateStaticField<int>("exitCode");
-        var logger = new LoggerConfiguration().CreateLogger();
+        using var logger = new LoggerConfiguration().CreateLogger();
 
         try
         {
@@ -88,7 +87,6 @@ public class ProgramTests
             SetPrivateStaticField("effectiveOutputDirectory", originalOutputDirectory);
             SetPrivateStaticField("log", originalLog);
             SetPrivateStaticField("exitCode", originalExitCode);
-            logger.Dispose();
         }
     }
 
