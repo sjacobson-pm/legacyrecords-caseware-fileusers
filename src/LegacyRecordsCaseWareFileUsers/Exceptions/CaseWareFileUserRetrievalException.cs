@@ -12,6 +12,13 @@ public class CaseWareFileUserRetrievalException : Exception
     /// <summary>
     ///     Initializes a new instance of the <see cref="CaseWareFileUserRetrievalException" /> class.
     /// </summary>
+    public CaseWareFileUserRetrievalException()
+    {
+    }
+
+    /// <summary>
+    ///     Initializes a new instance of the <see cref="CaseWareFileUserRetrievalException" /> class.
+    /// </summary>
     /// <param name="message">The message that describes the error.</param>
     public CaseWareFileUserRetrievalException(string message)
         : base(message)

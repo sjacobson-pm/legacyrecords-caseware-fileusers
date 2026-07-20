@@ -108,6 +108,15 @@ dotnet_diagnostic.VSTHRD200.severity                        = error
 # SA1302: Interface names should begin with I
 dotnet_diagnostic.SA1302.severity                           = error
 
+# Roslynator rules suppressed to avoid overlap with StyleCop / VSTHRD
+dotnet_diagnostic.RCS1003.severity                          = none
+dotnet_diagnostic.RCS1007.severity                          = none
+dotnet_diagnostic.RCS1018.severity                          = none
+dotnet_diagnostic.RCS1036.severity                          = none
+dotnet_diagnostic.RCS1057.severity                          = none
+dotnet_diagnostic.RCS1090.severity                          = none
+dotnet_diagnostic.RCS1110.severity                          = none
+
 # JavaScript code style settings
 [*.js]
 charset = utf-8
