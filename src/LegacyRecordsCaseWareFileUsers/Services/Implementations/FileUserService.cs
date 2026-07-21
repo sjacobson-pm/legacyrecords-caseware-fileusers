@@ -329,22 +329,40 @@ internal class FileUserService : IFileUserService
             channelCapacity,
             itemsToProcess.Count);
 
-        // start the consumer first so the channel drains as producers push. WriteAsync applies
-        // backpressure automatically when the channel is full, so starting the producer next is safe.
-        var consumerTask = this.ConsumeStagedFilesAsync(channel.Reader, caseWareDop, cancellationToken);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        try
+        // Start both sides of the pipeline and coordinate failures so one side cannot hang waiting
+        // on the other when bounded-channel backpressure is active.
+        var producerTask = this.ProduceStagedFilesAsync(itemsToProcess, channel.Writer, copyDop, linkedCts.Token);
+        var consumerTask = this.ConsumeStagedFilesAsync(channel.Reader, caseWareDop, linkedCts.Token);
+        var firstCompletedTask = await Task.WhenAny(producerTask, consumerTask).ConfigureAwait(false);
+
+        if (ReferenceEquals(firstCompletedTask, producerTask))
         {
-            await this.ProduceStagedFilesAsync(itemsToProcess, channel.Writer, copyDop, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            // signal the consumer to drain and exit — must happen even if the producer threw or was
-            // cancelled, otherwise the consumer would wait forever on an empty channel
+            if (producerTask.IsFaulted || producerTask.IsCanceled)
+            {
+                await linkedCts.CancelAsync().ConfigureAwait(false);
+                channel.Writer.TryComplete(producerTask.Exception?.GetBaseException());
+                await Task.WhenAll(producerTask, consumerTask).ConfigureAwait(false);
+                return;
+            }
+
+            // Producer finished successfully: close the channel so the consumer can drain and exit.
             channel.Writer.TryComplete();
+            await consumerTask.ConfigureAwait(false);
+            return;
         }
 
-        await consumerTask.ConfigureAwait(false);
+        if (consumerTask.IsFaulted || consumerTask.IsCanceled)
+        {
+            await linkedCts.CancelAsync().ConfigureAwait(false);
+            channel.Writer.TryComplete(consumerTask.Exception?.GetBaseException());
+            await Task.WhenAll(producerTask, consumerTask).ConfigureAwait(false);
+            return;
+        }
+
+        await producerTask.ConfigureAwait(false);
+        channel.Writer.TryComplete();
     }
 
     private async Task ProduceStagedFilesAsync(
